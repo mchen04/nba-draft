@@ -8,6 +8,7 @@ import {
   Stat,
   View,
   categoryStats,
+  slots,
   statIds,
 } from "@/lib/model";
 import {
@@ -1074,11 +1075,9 @@ export default function DraftRoom({ id }: { id: string }) {
                 onChange={(event) => setPosition(event.target.value)}
               >
                 <option value="">All positions</option>
-                {["PG", "SG", "SF", "PF", "C", "G", "F", "UTIL", "BN"].map(
-                  (slot) => (
-                    <option key={slot}>{slot}</option>
-                  ),
-                )}
+                {slots.map((slot) => (
+                  <option key={slot}>{slot}</option>
+                ))}
               </select>
             </label>
             <label>

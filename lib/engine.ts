@@ -455,11 +455,6 @@ export async function transactRoom(
                 { length: room.settings.teamCount },
                 () => rosterSlots(room.settings),
               ).flat();
-              const slotPlayers = allSlots.map((slot, index) => ({
-                ...room.catalog.players[0],
-                id: index,
-                positions: [slot],
-              }));
               const available = room.catalog.players.map(
                 (player) => player.positions,
               );
@@ -472,9 +467,7 @@ export async function transactRoom(
                 ) {
                   if (
                     seen.has(playerIndex) ||
-                    !available[playerIndex].includes(
-                      slotPlayers[index].positions[0],
-                    )
+                    !available[playerIndex].includes(allSlots[index])
                   )
                     continue;
                   seen.add(playerIndex);

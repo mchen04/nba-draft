@@ -75,10 +75,11 @@ There is no email service or password reset.
 If every ownership code and cookie is lost, there is no unauthenticated takeover route.
 
 Use search, position, and NBA team filters to find players.
+On phones, open “Filters” to show position and NBA team choices.
 Select a player, then press the button with that player's name to draft.
 Selection alone never drafts a player.
 Use “Player details” to inspect full projections and missing inputs.
-Use + Queue to add one player.
+Use + Queue to add one player. On phones, use + beside the player.
 Move up/down controls save your private queue order.
 Queue choices skip drafted players and players that cannot fit your roster.
 Open other teams through the pick strip, roster selector, or board team buttons.

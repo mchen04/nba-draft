@@ -25,19 +25,12 @@ export function SettingsEditor({
           value={settings.teamCount}
           onChange={(event) => {
             const count = Number(event.target.value);
-            setOrderText(
-              Array.from(
-                { length: Math.min(20, Math.max(0, count)) },
-                (_, index) => index + 1,
-              ).join(","),
+            const order = Array.from(
+              { length: Math.min(20, Math.max(0, count)) },
+              (_, index) => index,
             );
-            update({
-              teamCount: count,
-              order: Array.from(
-                { length: Math.min(20, Math.max(0, count)) },
-                (_, index) => index,
-              ),
-            });
+            setOrderText(order.map((slot) => slot + 1).join(","));
+            update({ teamCount: count, order });
           }}
         />
       </label>
