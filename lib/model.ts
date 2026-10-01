@@ -72,15 +72,22 @@ export type Catalog = {
 
 const counts = zod.object(
   Object.fromEntries(
-    slots.map((slot) => [slot, zod.number().int().min(0).max(30)]),
+    slots.map((slot) => [
+      slot,
+      zod
+        .number()
+        .int()
+        .min(0, `${slot} slots must be 0–30.`)
+        .max(30, `${slot} slots must be 0–30.`),
+    ]),
   ) as Record<Slot, zod.ZodNumber>,
 );
 const weights = zod.partialRecord(
   zod.enum(countingStats as [Stat, ...Stat[]]),
   zod
     .number()
-    .min(-100)
-    .max(100)
+    .min(-100, "Points per stat must be -100 to 100.")
+    .max(100, "Points per stat must be -100 to 100.")
     .refine(
       (value) => Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-8,
       "Use at most three decimal places.",
@@ -88,10 +95,21 @@ const weights = zod.partialRecord(
 );
 export const settingsSchema = zod
   .object({
-    teamCount: zod.number().int().min(2).max(20),
-    order: zod.array(zod.number().int()).min(2).max(20),
+    teamCount: zod
+      .number()
+      .int("Teams must be a whole number.")
+      .min(2, "Teams must be 2–20.")
+      .max(20, "Teams must be 2–20."),
+    order: zod
+      .array(zod.number().int("Draft order must contain every team once."))
+      .min(2, "Draft order must contain every team once.")
+      .max(20, "Draft order must contain every team once."),
     format: zod.enum(["3rr", "snake"]),
-    seconds: zod.number().int().min(5).max(600),
+    seconds: zod
+      .number()
+      .int("Seconds per pick must be a whole number.")
+      .min(5, "Seconds per pick must be 5–600.")
+      .max(600, "Seconds per pick must be 5–600."),
     slots: counts,
     scoring: zod.enum(["categories", "points"]),
     categories: zod.array(zod.enum(categoryStats as [Stat, ...Stat[]])).min(1),

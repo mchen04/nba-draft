@@ -97,6 +97,11 @@ If every ownership code and cookie is lost, there is no unauthenticated takeover
 Before a claim, the browser saves a private retry credential in session storage.
 If the claim response disappears, “Retry saved request” restores ownership.
 
+Each browser lists the rooms it opened on the home page and in the ☰ menu.
+Pick one to switch rooms; each room keeps its own team, queue, and cookie.
+The home page also opens a room from a pasted invite link or room ID.
+The list stores room names and team labels only, never codes or cookies.
+
 Search players, filter by position, and open “More” for NBA team, stat mode, and sort.
 Tap a name to select a player. Press the button with that player's name to draft.
 Selection alone never drafts a player.
@@ -182,6 +187,12 @@ The job requires `CRON_SECRET`; Vercel sends it automatically as a bearer token.
 Without it, the route returns 503 and deletes nothing.
 `?dryRun=1` reports counts without changes.
 
+Catch-up limits:
+- A room can outlive seven days by up to one day, because the job runs daily.
+- One run deletes at most 100 rooms. A larger backlog clears over the next days.
+- Vercel does not replay a missed run. The next daily run catches up.
+- `vercel crons run /api/cron/expire` triggers the job at once from the CLI.
+
 ## Exports
 
 Authenticated owners can download order, picks, and roster CSV files.
@@ -200,6 +211,7 @@ node --env-file=/private/path/neon.env --import tsx --test --test-concurrency=1 
 npm run build
 node --env-file=/private/path/neon.env --env-file=/private/path/cron.env node_modules/next/dist/bin/next start --port 3167
 ORIGIN=http://localhost:3167 EVIDENCE=/outside/checkout/evidence node --import tsx scripts/browser-acceptance.ts
+ORIGIN=http://localhost:3167 EVIDENCE=/outside/checkout/evidence node --import tsx scripts/browser-rooms.ts
 node --import tsx scripts/http-acceptance.ts http://localhost:3167 /outside/checkout/evidence
 ```
 
@@ -207,6 +219,7 @@ Database tests use real cached ESPN players and task-identified rooms.
 The expiry test refuses to sweep if any unrelated room is already past seven days.
 The outage test uses the 2025 cache row, which the app never offers.
 Browser acceptance drives a complete three-manager draft on phone, tablet, and desktop sizes.
+The rooms script switches one browser between two rooms and checks keyboard use, control names, errors, and scroll retention.
 It records document and panel scroll sizes for every screen and fails on any document scroll.
 Open every screenshot before claiming visual proof.
 Chromium viewport emulation does not prove Safari or an actual iPhone.

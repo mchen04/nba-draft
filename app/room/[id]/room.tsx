@@ -20,6 +20,12 @@ import {
   value,
 } from "@/lib/rules";
 import { SettingsEditor } from "@/app/components/settings";
+import {
+  RecentRoom,
+  forgetRoom,
+  recentRooms,
+  rememberRoom,
+} from "@/app/components/recent";
 
 type Tab = "Lobby" | "Players" | "Queue" | "Roster" | "Board";
 type Command = Record<string, unknown> & { type: string };
@@ -91,6 +97,7 @@ export default function DraftRoom({ id }: { id: string }) {
   const [retry, setRetry] = useState<{ body: string; label: string } | null>(
     null,
   );
+  const [otherRooms, setOtherRooms] = useState<RecentRoom[]>([]);
   const fetching = useRef(false),
     latestVersion = useRef(-1),
     readGeneration = useRef(0),
@@ -115,6 +122,7 @@ export default function DraftRoom({ id }: { id: string }) {
         signal: AbortSignal.timeout(15000),
       });
       const result = await response.json();
+      if (response.status === 404) forgetRoom(id);
       if (!response.ok) throw new Error(result.error);
       if (generation === readGeneration.current) accept(result);
     } catch {
@@ -166,6 +174,19 @@ export default function DraftRoom({ id }: { id: string }) {
       sortInitialized.current = true;
     }
   }, [room]);
+  const roomName = room?.name,
+    myLabel = !room
+      ? ""
+      : room.me?.slot == null
+        ? room.me
+          ? "No team"
+          : "Viewing"
+        : `Team ${room.me.slot + 1} · ${room.members.find((member) => member.slot === room.me!.slot)?.name ?? ""}`;
+  useEffect(() => {
+    if (!roomName) return;
+    rememberRoom({ id, name: roomName, team: myLabel });
+    setOtherRooms(recentRooms().filter((candidate) => candidate.id !== id));
+  }, [id, roomName, myLabel]);
   useEffect(() => {
     if (
       room &&
@@ -272,8 +293,17 @@ export default function DraftRoom({ id }: { id: string }) {
       )
         menuRef.current.open = false;
     };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !menuRef.current?.open) return;
+      menuRef.current.open = false;
+      menuRef.current.querySelector("summary")?.focus();
+    };
     document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
   }, []);
   useEffect(() => {
     if (!notice) return;
@@ -1145,7 +1175,14 @@ export default function DraftRoom({ id }: { id: string }) {
           )}
           <p>— means missing, not zero. Not affiliated with ESPN.</p>
         </div>
-        <a href="/">New room</a>
+        <nav className="room-links" aria-label="Switch room">
+          {otherRooms.map((other) => (
+            <a key={other.id} href={`/room/${other.id}`}>
+              {other.name} · {other.team}
+            </a>
+          ))}
+          <a href="/">New or join room</a>
+        </nav>
       </div>
     </details>
   );

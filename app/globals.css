@@ -891,6 +891,46 @@ tr.taken {
 .create .grid {
   margin-bottom: 8px;
 }
+.rooms {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  margin-bottom: 8px;
+}
+.rooms .button {
+  flex: 0 0 auto;
+  max-width: 220px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  color: var(--ink);
+}
+.rooms .button > * {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.join {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.room-links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+.room-links a {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Action bar */
 .actionbar {
