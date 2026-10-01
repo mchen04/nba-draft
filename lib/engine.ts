@@ -294,6 +294,7 @@ export async function transactRoom(
   id: string,
   token?: string,
   action?: Action,
+  withPlayers = true,
 ) {
   if (!zod.string().uuid().safeParse(id).success)
     throw new DraftError("Room not found.", 404);
@@ -303,14 +304,31 @@ export async function transactRoom(
     failure: DraftError | undefined;
   try {
     const result = await client.query(
-      "SELECT data FROM nba_draft.rooms WHERE id=$1 FOR UPDATE",
+      "SELECT data - 'catalog'::text - 'ranking'::text AS data, (data->'catalog') - 'players'::text AS catalog FROM nba_draft.rooms WHERE id=$1 FOR UPDATE",
       [id],
     );
     if (!result.rows.length) throw new DraftError("Room not found.", 404);
-    const room = result.rows[0].data as Room;
+    const room = {
+      ...result.rows[0].data,
+      catalog: { ...result.rows[0].catalog, players: [] },
+      ranking: [],
+    } as Room;
     const originalVersion = room.version;
     const clock = await client.query("SELECT clock_timestamp() AS now");
     const now = new Date(clock.rows[0].now).getTime();
+    // The frozen player pool is most of a room's bytes. Polls read it only when a turn is due.
+    const loaded =
+      withPlayers ||
+      action !== undefined ||
+      (room.phase === "live" && room.deadline !== null && room.deadline <= now);
+    if (loaded) {
+      const frozen = await client.query(
+        "SELECT data->'catalog'->'players' AS players, data->'ranking' AS ranking FROM nba_draft.rooms WHERE id=$1",
+        [id],
+      );
+      room.catalog.players = frozen.rows[0].players;
+      room.ranking = frozen.rows[0].ranking;
+    }
     await catchUp(client, room, now);
     const settled = JSON.stringify(room);
     await client.query("SAVEPOINT command");
@@ -625,10 +643,12 @@ export async function transactRoom(
       failure = error;
     }
     if (room.version !== originalVersion)
-      await client.query("UPDATE nba_draft.rooms SET data=$2 WHERE id=$1", [
-        id,
-        JSON.stringify(room),
-      ]);
+      await client.query(
+        loaded
+          ? "UPDATE nba_draft.rooms SET data=$2 WHERE id=$1"
+          : "UPDATE nba_draft.rooms SET data = $2::jsonb || jsonb_build_object('catalog', data->'catalog', 'ranking', data->'ranking') WHERE id=$1",
+        [id, JSON.stringify(room)],
+      );
     await client.query("COMMIT");
     if (failure) throw failure;
     return {

@@ -8,15 +8,14 @@ type Context = { params: Promise<{ id: string }> };
 export async function GET(request: NextRequest, context: Context) {
   try {
     const { id } = await context.params;
+    const catalog = request.nextUrl.searchParams.get("catalog") === "1";
     const result = await transactRoom(
       id,
       request.cookies.get(cookieName(id))?.value,
+      undefined,
+      catalog,
     );
-    return json(
-      request.nextUrl.searchParams.get("catalog") === "1"
-        ? result.room.catalog
-        : result.view,
-    );
+    return json(catalog ? result.room.catalog : result.view);
   } catch (error) {
     return problem(error);
   }

@@ -43,6 +43,12 @@ export function problem(error: unknown) {
       { error: error.issues.map((issue) => issue.message).join(" ") },
       400,
     );
+  const { name, code, message } = error as {
+    name?: string;
+    code?: string;
+    message?: string;
+  };
+  console.error("Room request failed", { name, code, message });
   return json(
     {
       error:

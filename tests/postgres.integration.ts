@@ -1,6 +1,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
+import { Client } from "pg";
 import { database } from "../lib/db";
 import {
   commissionerIdleLimit,
@@ -777,4 +778,55 @@ test("a manager can take over only after the commissioner is idle", async () => 
   );
   await assert.rejects(transactRoom(room.id, token, command("pause")));
   await transactRoom(room.id, secondToken, command("pause"));
+});
+
+test("polls read a small room row and leave the frozen player pool intact", async () => {
+  const { room, token } = await readyRoom();
+  const stored = () =>
+    database()
+      .query(
+        "SELECT md5((data->'catalog')::text || (data->'ranking')::text) AS frozen, (data->>'version')::int AS version FROM nba_draft.rooms WHERE id=$1",
+        [room.id],
+      )
+      .then((result) => result.rows[0]);
+  const before = await stored();
+  const query = Client.prototype.query;
+  let bytes = 0;
+  const poll = async () => {
+    bytes = 0;
+    Client.prototype.query = async function (this: Client, ...args: unknown[]) {
+      const result = await (query as Function).apply(this, args);
+      bytes += JSON.stringify(result?.rows ?? []).length;
+      return result;
+    } as typeof query;
+    try {
+      return await transactRoom(room.id, token, undefined, false);
+    } finally {
+      Client.prototype.query = query;
+    }
+  };
+  const quiet = await poll();
+  assert.ok(bytes < 20000, `poll read ${bytes} bytes`);
+  assert.equal(quiet.view.phase, "live");
+  assert.equal(quiet.view.me?.slot, 0);
+  assert.ok(quiet.view.catalog.season);
+  const full = await transactRoom(room.id, token);
+  assert.ok(JSON.stringify(full.room.catalog.players).length > 20 * bytes);
+  assert.deepEqual(await stored(), before);
+
+  await database().query(
+    "UPDATE nba_draft.rooms SET data=jsonb_set(data,'{deadline}',to_jsonb((extract(epoch FROM clock_timestamp())*1000-1000)::bigint)) WHERE id=$1",
+    [room.id],
+  );
+  const due = await poll();
+  assert.equal(due.view.picks.length, 1);
+  assert.equal(due.view.picks[0].source, "ranking");
+  assert.equal(due.view.picks[0].playerId, full.room.ranking[0]);
+  const after = await stored();
+  assert.equal(after.version, before.version + 1);
+  const frozen = await database().query(
+    "SELECT md5((data->'catalog')::text || (data->'ranking')::text) AS frozen FROM nba_draft.rooms WHERE id=$1",
+    [room.id],
+  );
+  assert.equal(frozen.rows[0].frozen, before.frozen);
 });
