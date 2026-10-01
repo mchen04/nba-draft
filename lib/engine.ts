@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { PoolClient } from "pg";
 import { z as zod } from "zod";
-import { database } from "./db";
+import { begin, database } from "./db";
 import { getCatalog } from "./espn";
 import { Member, Room, Settings, View, settingsSchema } from "./model";
 import {
@@ -53,8 +53,15 @@ export const actionSchema = zod.discriminatedUnion("type", [
   zod.object({
     ...base,
     type: zod.literal("start"),
-    acknowledge: zod.boolean(),
+    acknowledge: zod.boolean().optional(),
   }),
+  zod.object({ ...base, type: zod.literal("leave") }),
+  zod.object({
+    ...base,
+    type: zod.literal("transfer"),
+    slot: zod.number().int().min(0).max(19),
+  }),
+  zod.object({ ...base, type: zod.literal("takeCommissioner") }),
   zod.object({
     ...base,
     type: zod.literal("pick"),
@@ -90,6 +97,14 @@ export const createSchema = zod.object({
   commissioner: label,
   settings: settingsSchema,
 });
+export const inactiveLimit = 7 * 86400000;
+export const commissionerIdleLimit = 15 * 60000;
+function commissionerIdle(room: Room, now: number) {
+  const commissioner = room.members.find((member) => member.commissioner);
+  return (
+    !commissioner || (commissioner.activeAt ?? 0) < now - commissionerIdleLimit
+  );
+}
 export function actorFor(room: Room, token: string | undefined) {
   return token
     ? room.members.find((member) => member.sessions.includes(hash(token)))
@@ -127,7 +142,9 @@ export async function createRoom(
     ranking: [],
     version: 1,
     message: null,
+    activeAt: Date.now(),
   };
+  room.members[0].activeAt = room.activeAt;
   await database().query("INSERT INTO nba_draft.rooms(id,data) VALUES($1,$2)", [
     room.id,
     JSON.stringify(room),
@@ -148,11 +165,14 @@ export function roomView(room: Room, token?: string, now = Date.now()): View {
     picks: room.picks,
     version: room.version,
     message: room.message,
+    activeAt: room.activeAt,
     members: room.members.map((member) => ({
       name: member.name,
       slot: member.slot,
       ready: member.ready,
+      commissioner: member.commissioner,
     })),
+    commissionerIdle: commissionerIdle(room, now),
     me: actor
       ? {
           slot: actor.slot,
@@ -277,12 +297,11 @@ export async function transactRoom(
 ) {
   if (!zod.string().uuid().safeParse(id).success)
     throw new DraftError("Room not found.", 404);
-  const client = await database().connect();
+  const client = await begin();
   let issuedToken: string | undefined,
     recoveryCode: string | undefined,
     failure: DraftError | undefined;
   try {
-    await client.query("BEGIN");
     const result = await client.query(
       "SELECT data FROM nba_draft.rooms WHERE id=$1 FOR UPDATE",
       [id],
@@ -329,7 +348,6 @@ export async function transactRoom(
           }
         } else {
           if (action.type === "claim") {
-            requireLobby(room);
             if (
               action.slot >= room.settings.teamCount ||
               room.members.some((candidate) => candidate.slot === action.slot)
@@ -337,8 +355,14 @@ export async function transactRoom(
               throw new DraftError(
                 "That slot is already claimed. Choose another.",
               );
-            if (member?.slot !== null && member?.slot !== undefined)
-              throw new DraftError("You already own a team.");
+            if (
+              member?.slot !== null &&
+              member?.slot !== undefined &&
+              room.phase !== "lobby"
+            )
+              throw new DraftError(
+                "You already own a team. Teams switch only before the draft starts.",
+              );
             if (!member) {
               const secrets = claimSecrets(id, action);
               issuedToken = secrets.token;
@@ -346,7 +370,9 @@ export async function transactRoom(
               member = {
                 name: action.name,
                 slot: action.slot,
-                commissioner: false,
+                commissioner: !room.members.some(
+                  (candidate) => candidate.commissioner,
+                ),
                 sessions: [hash(issuedToken)],
                 recovery: hash(recoveryCode),
                 ready: false,
@@ -356,6 +382,7 @@ export async function transactRoom(
             } else {
               member.name = action.name;
               member.slot = action.slot;
+              member.ready = false;
             }
           } else if (action.type === "recover") {
             member = room.members.find(
@@ -371,6 +398,40 @@ export async function transactRoom(
                 "Claim a team or enter your recovery code.",
                 403,
               );
+            if (action.type === "leave") {
+              room.members = room.members.filter(
+                (candidate) => candidate !== member,
+              );
+              if (member.commissioner) {
+                const heir =
+                  room.members.find((candidate) => candidate.slot !== null) ??
+                  room.members[0];
+                if (heir) heir.commissioner = true;
+              }
+            }
+            if (action.type === "transfer") {
+              requireCommissioner(member);
+              const heir = room.members.find(
+                (candidate) => candidate.slot === action.slot,
+              );
+              if (!heir || heir === member)
+                throw new DraftError("Choose another manager's team.");
+              heir.commissioner = true;
+              member.commissioner = false;
+            }
+            if (action.type === "takeCommissioner") {
+              if (member.slot === null)
+                throw new DraftError("Claim a team first.");
+              if (member.commissioner)
+                throw new DraftError("You are already the commissioner.");
+              if (!commissionerIdle(room, now))
+                throw new DraftError(
+                  "The commissioner is active. Ask them to hand off the role.",
+                );
+              room.members.forEach((candidate) => {
+                candidate.commissioner = candidate === member;
+              });
+            }
             if (action.type === "ready") {
               requireLobby(room);
               if (member.slot === null)
@@ -437,20 +498,6 @@ export async function transactRoom(
                 ).length !== room.settings.teamCount
               )
                 throw new DraftError("Every team must be claimed and ready.");
-              const age = now - new Date(room.catalog.fetchedAt).getTime();
-              if (age > 7 * 86400000)
-                throw new DraftError(
-                  "Cached pool is over seven days old. Refresh before start.",
-                );
-              if (
-                (age > 86400000 ||
-                  room.catalog.projectedCount === 0 ||
-                  room.catalog.warning) &&
-                !action.acknowledge
-              )
-                throw new DraftError(
-                  "Acknowledge stale, missing, or cached source data before start.",
-                );
               const allSlots = Array.from(
                 { length: room.settings.teamCount },
                 () => rosterSlots(room.settings),
@@ -562,6 +609,8 @@ export async function transactRoom(
             }
           }
           room.version++;
+          room.activeAt = now;
+          if (member) member.activeAt = now;
           if (!issuedToken || action.type === "claim")
             await client.query(
               "INSERT INTO nba_draft.requests(room_id,request_id,actor,payload_hash) VALUES($1,$2,$3,$4)",
@@ -599,9 +648,66 @@ export async function transactRoom(
 export function rosterFor(room: Room, slot: number) {
   const players = room.picks
     .filter((pick) => pick.slot === slot)
-    .map(
-      (pick) =>
-        room.catalog.players.find((player) => player.id === pick.playerId)!,
+    .map((pick) =>
+      room.catalog.players.find((player) => player.id === pick.playerId)!,
     );
   return matchRoster(players, rosterSlots(room.settings));
+}
+
+// Deletes rooms with no manager action for seven days. Polling and timeout picks
+// never count as activity. A draft that is still live after catch-up stays.
+export async function expireRooms(dryRun = false, limit = 100) {
+  const pool = database();
+  const candidates = await pool.query(
+    `SELECT id FROM nba_draft.rooms
+     WHERE COALESCE((data->>'activeAt')::bigint, (extract(epoch FROM created_at) * 1000)::bigint)
+       < (extract(epoch FROM clock_timestamp()) * 1000)::bigint - $1
+     ORDER BY created_at LIMIT $2`,
+    [inactiveLimit, limit],
+  );
+  const result = { candidates: candidates.rows.length, expired: 0, kept: 0 };
+  for (const { id } of candidates.rows) {
+    const client = await begin();
+    try {
+      const locked = await client.query(
+        "SELECT data, created_at FROM nba_draft.rooms WHERE id=$1 FOR UPDATE SKIP LOCKED",
+        [id],
+      );
+      const clock = await client.query("SELECT clock_timestamp() AS now");
+      const now = new Date(clock.rows[0].now).getTime();
+      const room = locked.rows[0]?.data as Room | undefined;
+      const activeAt =
+        room?.activeAt ?? new Date(locked.rows[0]?.created_at).getTime();
+      if (!room || activeAt >= now - inactiveLimit) {
+        result.kept++;
+        await client.query("ROLLBACK");
+        continue;
+      }
+      const version = room.version;
+      await catchUp(client, room, now);
+      if (room.phase === "live") {
+        result.kept++;
+        if (room.version !== version && !dryRun)
+          await client.query("UPDATE nba_draft.rooms SET data=$2 WHERE id=$1", [
+            id,
+            JSON.stringify(room),
+          ]);
+      } else {
+        result.expired++;
+        if (!dryRun)
+          for (const table of ["requests", "picks", "rooms"])
+            await client.query(
+              `DELETE FROM nba_draft.${table} WHERE ${table === "rooms" ? "id" : "room_id"}=$1`,
+              [id],
+            );
+      }
+      await client.query(dryRun ? "ROLLBACK" : "COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  return result;
 }

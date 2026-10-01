@@ -62,6 +62,7 @@ export type Player = {
 };
 export type Catalog = {
   season: number;
+  mapping?: number;
   fetchedAt: string;
   players: Player[];
   projectedCount: number;
@@ -71,15 +72,22 @@ export type Catalog = {
 
 const counts = zod.object(
   Object.fromEntries(
-    slots.map((slot) => [slot, zod.number().int().min(0).max(30)]),
+    slots.map((slot) => [
+      slot,
+      zod
+        .number()
+        .int()
+        .min(0, `${slot} slots must be 0–30.`)
+        .max(30, `${slot} slots must be 0–30.`),
+    ]),
   ) as Record<Slot, zod.ZodNumber>,
 );
 const weights = zod.partialRecord(
   zod.enum(countingStats as [Stat, ...Stat[]]),
   zod
     .number()
-    .min(-100)
-    .max(100)
+    .min(-100, "Points per stat must be -100 to 100.")
+    .max(100, "Points per stat must be -100 to 100.")
     .refine(
       (value) => Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-8,
       "Use at most three decimal places.",
@@ -87,10 +95,21 @@ const weights = zod.partialRecord(
 );
 export const settingsSchema = zod
   .object({
-    teamCount: zod.number().int().min(2).max(20),
-    order: zod.array(zod.number().int()).min(2).max(20),
+    teamCount: zod
+      .number()
+      .int("Teams must be a whole number.")
+      .min(2, "Teams must be 2–20.")
+      .max(20, "Teams must be 2–20."),
+    order: zod
+      .array(zod.number().int("Draft order must contain every team once."))
+      .min(2, "Draft order must contain every team once.")
+      .max(20, "Draft order must contain every team once."),
     format: zod.enum(["3rr", "snake"]),
-    seconds: zod.number().int().min(5).max(600),
+    seconds: zod
+      .number()
+      .int("Seconds per pick must be a whole number.")
+      .min(5, "Seconds per pick must be 5–600.")
+      .max(600, "Seconds per pick must be 5–600."),
     slots: counts,
     scoring: zod.enum(["categories", "points"]),
     categories: zod.array(zod.enum(categoryStats as [Stat, ...Stat[]])).min(1),
@@ -132,17 +151,44 @@ export const settingsSchema = zod
       });
   });
 export type Settings = zod.infer<typeof settingsSchema>;
-export const defaultSettings: Settings = {
-  teamCount: 12,
-  order: Array.from({ length: 12 }, (_, index) => index),
-  format: "3rr",
-  seconds: 60,
+// ESPN H2H Points league defaults, read 2026-10-01 from ESPN's league-defaults
+// settings feed (leaguedefaults/2, season 2027) and ESPN's points-scoring article.
+// ESPN also adds one IR slot; IR is not a draft round, so the app omits it.
+export const espnPointsDefaults = {
+  teamCount: 10,
+  format: "snake",
+  seconds: 90,
   slots: { PG: 1, SG: 1, SF: 1, PF: 1, C: 1, G: 1, F: 1, UTIL: 3, BN: 3 },
-  scoring: "categories",
+  weights: {
+    PTS: 1,
+    "3PM": 1,
+    FGA: -1,
+    FGM: 2,
+    FTA: -1,
+    FTM: 1,
+    REB: 1,
+    AST: 2,
+    STL: 4,
+    BLK: 4,
+    TO: -2,
+  },
+} satisfies Partial<Settings>;
+// ESPN's season id is the year the season ends; its feed switched to 2027 before October 2026.
+export function currentSeason(date = new Date()) {
+  return date.getUTCFullYear() + (date.getUTCMonth() >= 6 ? 1 : 0);
+}
+// Every value is ESPN's points default except the draft format: 3RR is this app's default.
+export const defaultSettings: Settings = {
+  ...espnPointsDefaults,
+  order: Array.from(
+    { length: espnPointsDefaults.teamCount },
+    (_, index) => index,
+  ),
+  format: "3rr",
+  scoring: "points",
   categories: categoryStats.slice(0, 9),
-  weights: { PTS: 1, REB: 1.2, AST: 1.5, STL: 3, BLK: 3, TO: -1 },
-  fallback: "PTS",
-  season: 2027,
+  fallback: "FP",
+  season: currentSeason(),
 };
 export type Member = {
   name: string;
@@ -152,6 +198,7 @@ export type Member = {
   recovery: string;
   ready: boolean;
   queue: number[];
+  activeAt?: number;
 };
 export type Pick = {
   index: number;
@@ -174,9 +221,16 @@ export type Room = {
   ranking: number[];
   version: number;
   message: string | null;
+  activeAt?: number;
 };
 export type View = Omit<Room, "members" | "catalog" | "ranking"> & {
-  members: { name: string; slot: number | null; ready: boolean }[];
+  members: {
+    name: string;
+    slot: number | null;
+    ready: boolean;
+    commissioner: boolean;
+  }[];
+  commissionerIdle: boolean;
   me: { slot: number | null; commissioner: boolean; ready: boolean } | null;
   queue: number[];
   catalog: Omit<Catalog, "players">;

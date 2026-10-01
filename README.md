@@ -28,10 +28,28 @@ TLS verifies the database certificate.
 ## Commissioner guide
 
 Create a room, choose rules, and share its room address.
-Defaults are examples, not facts about your league.
+New rooms start with ESPN's H2H Points defaults, except the draft format.
+
+| Setting      | Default                                                                        | Source                            |
+| ------------ | ------------------------------------------------------------------------------ | --------------------------------- |
+| Teams        | 10                                                                             | ESPN                              |
+| Pick clock   | 90 seconds                                                                     | ESPN                              |
+| Roster       | PG, SG, SF, PF, C, G, F, 3 UTIL, 3 BN (13 rounds)                              | ESPN                              |
+| Scoring      | PTS 1, 3PM 1, FGA −1, FGM 2, FTA −1, FTM 1, REB 1, AST 2, STL 4, BLK 4, TOV −2 | ESPN                              |
+| Format       | Third-round reversal (3RR)                                                     | This app. ESPN defaults to snake. |
+| Timeout pick | Highest FP per game                                                            | This app                          |
+
+ESPN also adds one IR slot. IR is not a draft round, so the app omits it.
+Sources, read 2026-10-01:
+[ESPN default points-league scoring](https://www.espn.com/fantasy/basketball/story/_/id/30296896/espn-fantasy-default-points-league-scoring-explained),
+[ESPN Fantasy Basketball 101: settings](https://www.espn.com/fantasy/basketball/story/_/id/20800285/espn-fantasy-basketball-101-adjusting-settings),
+and ESPN's own league-defaults feed for season 2027
+(`lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/2027/segments/0/leaguedefaults/2?view=mSettings`, “FBA H2H Points”).
+“Use ESPN defaults” restores them and keeps your chosen format.
+
+Every value stays editable in the lobby under League settings.
 Supported sizes are 2–20 teams and 1–30 roster slots.
 Pick clocks support 5–600 seconds.
-Change roster size through the position counts.
 Change the first-round order with team numbers separated by commas.
 Every team must claim a slot and mark ready before start.
 Changing settings clears ready flags.
@@ -41,55 +59,59 @@ Snake reverses every round.
 For four teams, 3RR starts ABCD, DCBA, DCBA, ABCD, DCBA.
 See [Sleeper's third-round-reversal explanation](https://support.sleeper.com/en/articles/3896882-what-is-3rd-round-reversal).
 
-Choose categories or custom points weights.
-Supported points inputs appear in setup.
+Category scoring is also available.
 Double-double bonuses and keepers are not supported.
-Timeout ranking is configurable and stays separate from each manager's table sort.
 Turnover ranking puts lower values first.
-Category ranking is not a balanced category recommendation.
 
 After start, rules, projections, and eligibility stay fixed.
-Pause saves the remaining clock.
-Resume restores it.
-Enable “Pick for on-clock team” to draft for an absent manager.
-“Undo latest” previews the latest pick and requires confirmation.
-If another device changes the draft, review the latest pick again before undoing.
+Pause saves the remaining clock. Resume restores it.
+Check “Pick for team on clock” to draft for an absent manager.
+“Undo” previews the latest pick and requires confirmation.
 Undo removes only that pick and pauses the room with a full clock.
-Review the roster before resuming.
 If no remaining player fits, the room pauses instead of breaking roster rules.
-Undo can also reopen a completed room.
+
+Hand off the commissioner role from the ☰ menu.
+If the commissioner leaves, the longest-standing manager with a team becomes commissioner.
+If the commissioner makes no action for 15 minutes, any manager can take over from the ☰ menu.
 
 ## Manager guide
 
-Open the invite address, enter your name, and claim an open team.
+The room always fits one screen. Lists, the board, and menus scroll inside their own panels.
+On phones, the tabs switch between Lobby, Players, Queue, Roster, and Board.
+On wider screens, the queue and roster stay beside the player list.
+Each panel keeps its filters, selection, and scroll position when you switch views.
+
+Open the invite address, choose an open team, enter your name, and join.
+Before the draft starts, “Switch” moves you to another open team.
+“Leave room…” in the ☰ menu releases your team. Join again like a new manager.
+After the draft starts, a team that loses its manager keeps drafting by timeout.
+Anyone with the invite address can claim that open team and continue.
+
 Your ownership cookie survives refresh and browser reconnect.
-Save your private recovery code after creation or claim.
-Before a claim, the browser saves a private retry credential in session storage.
-If the complete response disappears, retry restores ownership and the recovery code, even after reloading that tab.
-The database stores only credential hashes. Closing the tab before recovery discards its saved retry.
-Use “Recover your team on another device” to restore ownership and your queue.
+Save your private recovery code from the lobby banner or the ☰ menu.
+Use the recovery code in the ☰ menu on another device to restore your team and queue.
 The commissioner code also restores commissioner controls.
 Anyone with a recovery code can control that owner; keep it private.
 Recovery supports up to five recent device sessions.
-There is no email service or password reset.
 If every ownership code and cookie is lost, there is no unauthenticated takeover route.
+Before a claim, the browser saves a private retry credential in session storage.
+If the claim response disappears, “Retry saved request” restores ownership.
 
-Use search, position, and NBA team filters to find players.
-On phones, open “Filters” to show position and NBA team choices.
-Select a player, then press the button with that player's name to draft.
+Each browser lists the rooms it opened on the home page and in the ☰ menu.
+Pick one to switch rooms; each room keeps its own team, queue, and cookie.
+The home page also opens a room from a pasted invite link or room ID.
+The list stores room names and team labels only, never codes or cookies.
+
+Search players, filter by position, and open “More” for NBA team, stat mode, and sort.
+Tap a name to select a player. Press the button with that player's name to draft.
 Selection alone never drafts a player.
-Use “Player details” to inspect full projections and missing inputs.
-Use + Queue to add one player. On phones, use + beside the player.
-Move up/down controls save your private queue order.
+Tap the selected player at the bottom for full projections.
+Use + beside a player to queue. Use ↑ and ↓ in Queue to reorder.
 Queue choices skip drafted players and players that cannot fit your roster.
-Open other teams through the pick strip, roster selector, or board team buttons.
-Filters, selection, and list scroll stay when you change views.
+The tab bar shows your open roster slots.
 
 Rosters use full position matching, not greedy placement.
-Earlier flexible players can move when a later pick requires their old slot.
-Open slots show needs; each player fills only one slot.
 Roster percentage totals use summed makes divided by summed attempts.
-Partial coverage is shown beside each total.
 
 ## Clocks and offline behavior
 
@@ -104,7 +126,7 @@ The next request catches up every expired turn in one transaction.
 It can complete an entire expired draft without the original browser or process.
 Pick timestamps represent logical deadlines during catch-up.
 This is lazy catch-up, not a continuously running offline feed.
-No cron subscription or unsupported background loop is required.
+Draft clocks need no cron or background loop. The daily expiry job (below) is separate.
 The Next.js handlers use Node functions with a 60-second execution limit.
 
 Manual picks after an expired deadline lose to the server timeout.
@@ -126,29 +148,50 @@ The server reads ESPN's unofficial endpoint without ESPN credentials:
 `https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/{year}/segments/0/leaguedefaults/1?view=kona_player_info`
 
 Season uses the ending year: 2027 means 2026–27.
+ESPN's game feed reported `currentSeasonId` 2027 on 2026-10-01.
+The app defaults to the next ending year from July onward.
 Only source 1, season split 0, scoring period 0, and the matching year count as forecasts.
-ESPN slot IDs map separately from primary-position IDs.
-IR never adds draft capacity.
-Unrecognized-only eligibility is excluded and disclosed.
+On 2026-10-01 ESPN returned 1,095 players; 349 had a 2026–27 projection.
+Players without one stay in the pool, sort last, and show — for every stat.
+ESPN slot IDs 0–6, 11, and 12 map to PG, SG, SF, PF, C, G, F, UTIL, and BN.
+Combined ESPN slots (G/F, F/C, and similar) and IR never add draft capacity.
+Team IDs map to standard NBA abbreviations; ESPN's own team list confirms each ID.
 Duplicate identities, invalid payloads, and truncated pools do not replace a usable cache.
 
-The UI shows retrieval time, season, missing counts, and current projection coverage.
-ESPN's revision time and rate limits are unknown.
-Missing values stay missing; zero stays zero.
-Counting rates use season totals divided by projected games.
-Percentages use source ratios, or labeled makes/attempts derivation.
+ESPN leaves zero-valued stats out of a projection line.
+For example, a center with 7 projected 3PA and 7 3PA misses has no 3PM entry.
+The app restores those zeros only when points and every made/missed/attempted total reconcile.
+All 349 current lines reconcile. A line that does not reconcile keeps its gaps as missing.
+ESPN's own percentages stay unchanged. The app derives a missing percentage from makes and attempts.
 Points scores require every nonzero-weight input.
-Decimal arithmetic applies weights before presentation rounding.
+Counting rates use season totals divided by projected games.
 
-Validated snapshots persist in Postgres.
-Setup reuses them for six hours.
-Refresh attempts are shared and limited to one per season per 15 minutes.
-Failures keep the old values and display a cache warning.
-The app does not bypass source restrictions or make repeated automatic retries.
-Snapshots over 24 hours old require commissioner acknowledgment.
-Snapshots over seven days old cannot start a draft.
-Starting with no forecasts also requires acknowledgment.
-Live drafts use their own frozen snapshot during ESPN outages.
+Validated snapshots persist in Postgres and refresh after six hours.
+A mapping change also triggers a refresh.
+Refresh attempts are limited to one per season per 15 minutes.
+Failures keep the old values. A small amber “ESPN” age badge marks stale or failed data.
+The ☰ menu shows source, coverage, retrieval time, and any warning.
+Stale data never blocks the start of a draft.
+Live drafts use their own frozen snapshot, so ESPN outages do not affect picks.
+
+## Room expiry
+
+Rooms expire after seven days without a manager action.
+Manager actions are claims, ready changes, settings, queue edits, picks, pauses, undo, recovery, leave, and hand-off.
+Page polling, room reads, and timeout picks do not count.
+A daily Vercel Cron job calls `/api/cron/expire` at 09:17 UTC (`vercel.json`).
+Vercel's free Hobby plan allows one run per day and may run any time within that hour ([Vercel cron limits](https://vercel.com/docs/cron-jobs/usage-and-pricing), read 2026-10-01).
+The job first resolves expired turns. A draft that is still live stays.
+It then deletes the room, its picks, and its request receipts.
+The job requires `CRON_SECRET`; Vercel sends it automatically as a bearer token.
+Without it, the route returns 503 and deletes nothing.
+`?dryRun=1` reports counts without changes.
+
+Catch-up limits:
+- A room can outlive seven days by up to one day, because the job runs daily.
+- One run deletes at most 100 rooms. A larger backlog clears over the next days.
+- Vercel does not replay a missed run. The next daily run catches up.
+- `vercel crons run /api/cron/expire` triggers the job at once from the CLI.
 
 ## Exports
 
@@ -166,47 +209,35 @@ npm run check
 npm test
 node --env-file=/private/path/neon.env --import tsx --test --test-concurrency=1 tests/postgres.integration.ts
 npm run build
-node --env-file=/private/path/neon.env node_modules/next/dist/bin/next start --port 3104
-node --import tsx scripts/browser-acceptance.ts http://localhost:3104 /outside/checkout/evidence
-node --import tsx scripts/edge-acceptance.ts http://localhost:3104 /outside/checkout/evidence
-node --import tsx scripts/http-acceptance.ts http://localhost:3104 /outside/checkout/evidence
-node --env-file=/private/path/neon.env --import tsx scripts/ui-extra-acceptance.ts http://localhost:3104 /outside/checkout/evidence
-node --import tsx scripts/offline-acceptance.ts prepare http://localhost:3104 /outside/checkout/evidence
+node --env-file=/private/path/neon.env --env-file=/private/path/cron.env node_modules/next/dist/bin/next start --port 3167
+ORIGIN=http://localhost:3167 EVIDENCE=/outside/checkout/evidence node --import tsx scripts/browser-acceptance.ts
+ORIGIN=http://localhost:3167 EVIDENCE=/outside/checkout/evidence node --import tsx scripts/browser-rooms.ts
+node --import tsx scripts/http-acceptance.ts http://localhost:3167 /outside/checkout/evidence
 ```
 
 Database tests use real cached ESPN players and task-identified rooms.
-They leave these rooms as evidence and never delete unrelated data.
-Do not run test outage simulation against a database serving a user draft setup.
-The test restores shared cache status after the injected failure.
-Browser acceptance uses the installed Agent Browser CLI with isolated sessions.
+The expiry test refuses to sweep if any unrelated room is already past seven days.
+The outage test uses the 2025 cache row, which the app never offers.
+Browser acceptance drives a complete three-manager draft on phone, tablet, and desktop sizes.
+The rooms script switches one browser between two rooms and checks keyboard use, control names, errors, and scroll retention.
+It records document and panel scroll sizes for every screen and fails on any document scroll.
 Open every screenshot before claiming visual proof.
-The offline check closes its originating browsers after start.
-Stop the server, wait past all deadlines, and inspect stored state without calling the room API.
-Start a new server process, then run the offline script with `verify` instead of `prepare`.
-The check requires queued picks at the original deadlines, not the reconnect time.
-Extra browser checks require the private database environment for controlled row contention and source outage.
-`CAPTURE_TRANSPORT=none` permits functional checks when screenshot capture fails.
-It records unavailable captures and never proves visual acceptance.
 Chromium viewport emulation does not prove Safari or an actual iPhone.
 
 ## Vercel publication
 
-Publication follows independent review, verification, and cleanup gates.
-Do not push, open a PR, merge, or deploy during the build-only stage.
-During the authorized publication stage:
+The live app deploys from `main` through the connected Vercel project.
 
-1. Connect this GitHub repository to a task-scoped Vercel project.
-2. Set pooled `DATABASE_URL` as a server-only environment value.
-3. Inspect and migrate the selected database before the first deployment.
-4. Use `npm ci` and the default Next.js build command.
-5. Push the approved feature commit, open a PR, and merge after exact-head checks.
-6. Confirm the production deployment matches the merged commit.
-7. Run browser acceptance against the actual deployment and inspect fresh screenshots.
-8. Repeat persistence, ownership, timeout, and export checks on the deployed room.
+1. Set pooled `DATABASE_URL` as a server-only environment value.
+2. Set `CRON_SECRET` (any long random string) as a server-only value. Expiry stays off without it.
+3. Push a branch, open a PR, and merge after checks. Vercel builds `main` and registers the cron job from `vercel.json`.
+4. Confirm the production deployment matches the merged commit.
+5. Run browser acceptance against the deployment and inspect fresh screenshots.
+6. Confirm the cron job in the Vercel project settings, then read its daily log.
 
+The schema needs no migration for this release. Activity time lives in each room's JSON data.
 Do not print connection values or put them in URLs, screenshots, source, or client bundles.
 Do not buy services or change unrelated infrastructure.
-No live URL or deployed acceptance is claimed by the local build.
 
 ## Recovery and boundaries
 

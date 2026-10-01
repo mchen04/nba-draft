@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   Player,
   Slot,
+  currentSeason,
   defaultSettings,
+  espnPointsDefaults,
   settingsSchema,
   statIds,
 } from "../lib/model";
@@ -194,4 +197,60 @@ test("settings reject empty rosters, duplicate team order, invalid timers, and u
       .success,
     false,
   );
+});
+test("real ESPN lines restore omitted zeros only when totals reconcile", () => {
+  const sample = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/espn-2027-sample.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const catalog = normalizeCatalog(sample, 2027);
+  const byName = (name: string) =>
+    catalog.players.find((candidate) => candidate.name === name)!;
+  const allen = byName("Jarrett Allen");
+  assert.equal(allen.totals["3PA"], 7);
+  assert.equal(allen.totals["3PM"], 0);
+  assert.equal(allen.totals["3P%"], 0.055);
+  const duren = byName("Jalen Duren");
+  assert.equal(duren.totals["3PA"], 0);
+  assert.equal(duren.totals["3P%"], null);
+  assert.notEqual(value(duren, "FP", defaultSettings), null);
+  assert.equal(byName("Jordan Miller").projected, false);
+  assert.deepEqual(byName("Victor Wembanyama").positions, ["C", "UTIL", "BN"]);
+  const broken = structuredClone(sample);
+  const line = broken.players
+    .find(
+      (entry: { player: { fullName: string } }) =>
+        entry.player.fullName === "Jarrett Allen",
+    )
+    .player.stats.find((stat: { seasonId: number }) => stat.seasonId === 2027);
+  line.stats["0"] += 50;
+  const unreconciled = normalizeCatalog(broken, 2027).players.find(
+    (candidate) => candidate.name === "Jarrett Allen",
+  )!;
+  assert.equal(unreconciled.totals["3PM"], null);
+  assert.equal(value(unreconciled, "FP", defaultSettings), null);
+});
+test("defaults match ESPN H2H Points except the app's 3RR format", () => {
+  assert.equal(defaultSettings.format, "3rr");
+  assert.equal(espnPointsDefaults.format, "snake");
+  assert.equal(defaultSettings.teamCount, 10);
+  assert.equal(defaultSettings.seconds, 90);
+  assert.equal(defaultSettings.scoring, "points");
+  assert.deepEqual(defaultSettings.weights, {
+    PTS: 1,
+    "3PM": 1,
+    FGA: -1,
+    FGM: 2,
+    FTA: -1,
+    FTM: 1,
+    REB: 1,
+    AST: 2,
+    STL: 4,
+    BLK: 4,
+    TO: -2,
+  });
+  assert.equal(currentSeason(new Date("2026-10-01T00:00:00Z")), 2027);
+  assert.equal(currentSeason(new Date("2027-03-01T00:00:00Z")), 2027);
 });

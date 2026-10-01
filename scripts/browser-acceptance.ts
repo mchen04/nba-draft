@@ -1,576 +1,458 @@
-import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+// Complete three-manager draft through real browser sessions on phone, tablet, and desktop viewports.
 import assert from "node:assert/strict";
-
-const origin = process.argv[2] ?? "http://127.0.0.1:3104";
-const evidence = resolve(process.argv[3] ?? "../nba-draft-evidence");
-const sessions = ["nba-t_d4c47e94-a", "nba-t_d4c47e94-b", "nba-t_d4c47e94-c"];
-mkdirSync(`${evidence}/screenshots`, { recursive: true });
-const receipt = `${evidence}/browser-commands.jsonl`;
-function cli(session: string, args: string[], privateResult = false) {
-  const output = execFileSync(
-    "agent-browser",
-    ["--session", session, "--json", ...args],
-    { encoding: "utf8", timeout: 60000, maxBuffer: 8 * 1024 * 1024 },
-  );
-  const result = JSON.parse(output);
-  appendFileSync(
-    receipt,
-    JSON.stringify({
-      at: new Date().toISOString(),
-      session,
-      args: privateResult ? [args[0], "private recovery"] : args,
-      result: privateResult ? { success: result.success } : result,
-    }) + "\n",
-  );
-  if (!result.success)
-    throw new Error(result.error ?? "Browser command failed.");
-  return result.data;
-}
-function element(session: string, role: string, name: string | RegExp) {
-  const snapshot = cli(session, ["snapshot", "-i"]);
-  const match = Object.entries(
-    snapshot.refs as Record<string, { role: string; name: string }>,
-  ).find(
-    ([, item]) =>
-      item.role === role &&
-      (typeof name === "string" ? item.name === name : name.test(item.name)),
-  );
-  if (!match) throw new Error(`Missing ${role}: ${name}`);
-  return `@${match[0]}`;
-}
-function click(session: string, name: string | RegExp, role = "button") {
-  cli(session, ["scrollintoview", element(session, role, name)]);
-  const deadline = Date.now() + 15000;
-  while (
-    !cli(session, ["is", "enabled", element(session, role, name)]).enabled
-  ) {
-    if (Date.now() >= deadline)
-      throw new Error(`Action stays disabled: ${name}`);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
-  }
-  cli(session, ["click", element(session, role, name)]);
-}
-function fill(
-  session: string,
-  name: string,
-  input: string,
-  role = "textbox",
-  privateResult = false,
-) {
-  if (name === "Search players") {
-    if (cli(session, ["get", "value", element(session, "searchbox", name)]).value)
-      click(session, "Clear search");
-    assert.equal(
-      cli(session, ["get", "value", element(session, "searchbox", name)]).value,
-      "",
-      "Search clears through the app before replacement",
-    );
-    if (input === "") return;
-  }
-  const inputRole = name === "Search players" ? "searchbox" : role;
-  cli(session, ["focus", element(session, inputRole, name)]);
-  evaluate(session, "document.activeElement.select(); return true;");
-  cli(session, ["keyboard", "inserttext", input], privateResult);
-  assert.ok(
-    cli(session, ["get", "value", element(session, inputRole, name)], privateResult)
-      .value === input,
-    `Field contains the exact requested text: ${name}`,
-  );
-}
-function select(session: string, name: string, input: string) {
-  cli(session, ["select", element(session, "combobox", name), input]);
-}
-const pause = (milliseconds: number) =>
-  new Promise((resolve) => setTimeout(resolve, milliseconds));
-async function waitFor(test: () => boolean, label: string) {
-  const deadline = Date.now() + 40000;
-  while (Date.now() < deadline) {
-    if (test()) return;
-    await pause(500);
-  }
-  throw new Error(`Timed out: ${label}`);
-}
-function evaluate(session: string, source: string, privateResult = false) {
-  return cli(session, ["eval", `(() => { ${source} })()`], privateResult)
-    .result;
-}
-function snapshot(session: string) {
-  return cli(session, ["snapshot"]).snapshot as string;
-}
-function shot(session: string, name: string) {
-  cli(session, ["wait", "400"]);
-  if (process.env.CAPTURE_TRANSPORT === "none") {
-    appendFileSync(
-      `${evidence}/capture-unavailable.jsonl`,
-      JSON.stringify({
-        requestedAt: new Date().toISOString(),
-        session,
-        name,
-        reason: "Screenshot unavailable. No image or visual pass is claimed.",
-      }) + "\n",
-    );
-    return;
-  }
-  cli(session, ["screenshot", `${evidence}/screenshots/${name}.png`]);
-}
-function overflow(session: string) {
-  const result = evaluate(
-    session,
-    "return {width:innerWidth,scroll:document.documentElement.scrollWidth,clock:!!document.querySelector('.clock-block')};",
-  );
-  assert.ok(
-    result.scroll <= result.width,
-    `Page overflow ${JSON.stringify(result)}`,
-  );
-  return result;
-}
-function usableList(session: string) {
-  const bounds = evaluate(
-    session,
-    `
-    const listNode = document.querySelector('.table-scroll');
-    const list = listNode.getBoundingClientRect();
-    const heading = document.querySelector('.player-table thead').getBoundingClientRect();
-    const tray = document.querySelector('.selection-tray').getBoundingClientRect();
-    const summary = document.querySelector('.room-summary').getBoundingClientRect();
-    const top = Math.max(list.top + heading.height, summary.bottom);
-    const bottom = Math.min(list.top + listNode.clientHeight, tray.top);
-    const rows = [...document.querySelectorAll('.player-table tbody tr')].filter(row => {
-      const rect = row.getBoundingClientRect();
-      return rect.top >= top - 1 && rect.bottom <= bottom + 1;
-    });
-    return { width: innerWidth, height: innerHeight, listTop: list.top, listBottom: list.bottom,
-      trayTop: tray.top, fullRows: rows.length, rowCount: document.querySelectorAll('.player-table tbody tr').length };
-  `,
-  );
-  appendFileSync(
-    `${evidence}/list-bounds.jsonl`,
-    JSON.stringify(bounds) + "\n",
-  );
-  assert.ok(
-    bounds.listBottom <= bounds.trayTop + 1,
-    `List overlaps action bar: ${JSON.stringify(bounds)}`,
-  );
-  assert.ok(
-    bounds.fullRows >= Math.min(3, bounds.rowCount),
-    `Too few usable rows: ${JSON.stringify(bounds)}`,
-  );
-  return bounds;
-}
-async function searchPlayer(session: string, name: string) {
-  click(session, "Players");
-  fill(session, "Search players", name);
-  await waitFor(
-    () =>
-      Object.values(
-        cli(session, ["snapshot", "-i"]).refs as Record<
-          string,
-          { role: string; name: string }
-        >,
-      ).some((item) => item.role === "button" && item.name === `Select ${name}`),
-    name,
-  );
-  click(session, `Select ${name}`);
-}
-async function draft(
-  session: string,
-  name: string,
-  count: number,
-  state: () => { picks: { slot: number; playerId: number; source: string }[] },
-) {
-  await searchPlayer(session, name);
-  assert.equal(
-    cli(session, ["is", "enabled", element(session, "button", `Draft ${name}`)])
-      .enabled,
-    true,
-  );
-  click(session, `Draft ${name}`);
-  await waitFor(() => state().picks.length === count, `pick ${count}`);
-}
-
-async function main() {
-  const [first, second, recovered] = sessions;
-  try {
-    cli(first, ["open", origin]);
-    cli(first, ["set", "viewport", "1440", "1000"]);
-    fill(
-      first,
-      "Room name",
-      `t_d4c47e94 Browser acceptance ${new Date().toISOString()}`,
-    );
-    fill(first, "Commissioner name", "Manager A");
-    fill(first, "Teams", "2", "spinbutton");
-    fill(first, "Seconds per pick", "600", "spinbutton");
-    for (const slot of ["SG", "SF", "PF", "F", "UTIL", "BN"])
-      fill(first, slot, "0", "spinbutton");
-    shot(first, "setup-desktop");
-    click(first, "Create draft room");
-    await waitFor(
-      () => evaluate(first, "return location.pathname.startsWith('/room/');"),
-      "create room",
-    );
-    await waitFor(
-      () => snapshot(first).includes("Draft lobby"),
-      "lobby loaded",
-    );
-    const url = evaluate(first, "return location.href;");
-    const id = url.split("/").at(-1);
-    writeFileSync(`${evidence}/browser-room.txt`, `${id}\n${url}\n`);
-    const state = () =>
-      evaluate(
-        first,
-        `return fetch('/api/rooms/${id}').then(response => response.json());`,
-      );
-    const source = evaluate(
-      first,
-      `return fetch('/api/rooms/${id}?catalog=1').then(response => response.json());`,
-    );
-    const playerId = (name: string) =>
-      source.players.find(
-        (player: { name: string; id: number }) => player.name === name,
-      ).id;
-    fill(first, "Manager name", "Manager A");
-    click(first, "Claim team 1");
-    await waitFor(
-      () => snapshot(first).includes("Ready to draft"),
-      "first claim",
-    );
-    click(first, "Copy invite link");
-    click(first, "Ready to draft");
-    cli(second, ["open", url]);
-    cli(second, ["set", "viewport", "320", "568"]);
-    await waitFor(
-      () => snapshot(second).includes("Draft lobby"),
-      "second lobby",
-    );
-    click(second, /Team 2.*Open slot/);
-    fill(second, "Manager name", "Manager B");
-    click(second, "Claim team 2");
-    await waitFor(
-      () => snapshot(second).includes("Ready to draft"),
-      "second claim",
-    );
-    const recovery = evaluate(
-      second,
-      `return sessionStorage.getItem('recovery_${id}');`,
-      true,
-    );
-    click(second, "Ready to draft");
-    await waitFor(
-      () =>
-        state().members.filter(
-          (member: { ready: boolean; slot: number | null }) =>
-            member.slot !== null && member.ready,
-        ).length === 2,
-      "both ready",
-    );
-    shot(first, "lobby-desktop");
-    shot(second, "lobby-phone");
-    overflow(second);
-    click(first, "Start draft");
-    await waitFor(() => state().phase === "live", "live draft");
-    click(first, "Pause");
-    await waitFor(() => state().phase === "paused", "paused");
-    const remaining = state().remaining;
-    await pause(1200);
-    assert.equal(state().remaining, remaining);
-    click(first, "Resume");
-    await waitFor(() => state().phase === "live", "resumed");
-    await searchPlayer(first, "Luka Doncic");
-    click(first, "Queue Luka Doncic");
-    await waitFor(() => state().queue.length === 1, "queued Luka");
-    fill(first, "Search players", "Trae Young");
-    click(first, "Queue Trae Young");
-    await waitFor(() => state().queue.length === 2, "queued Trae");
-    click(first, "Move Trae Young up");
-    await waitFor(
-      () =>
-        state().queue[0] !== state().queue[1] &&
-        state().queue[0] === playerId("Trae Young"),
-      "queue reorder",
-    );
-    click(first, "Move Trae Young down");
-    await waitFor(
-      () => state().queue[0] === playerId("Luka Doncic"),
-      "queue reorder back",
-    );
-    assert.equal(
-      evaluate(
-        second,
-        `return fetch('/api/rooms/${id}').then(response=>response.json()).then(state=>state.queue.length);`,
-      ),
-      0,
-    );
-    await searchPlayer(second, "Shai Gilgeous-Alexander");
-    click(second, "Queue Shai Gilgeous-Alexander");
-    await waitFor(
-      () =>
-        evaluate(
-          second,
-          `return fetch('/api/rooms/${id}').then(response=>response.json()).then(state=>state.queue.length);`,
-        ) === 1,
-      "second queue",
-    );
-    click(first, "Players");
-    fill(first, "Search players", "");
-    shot(first, "live-desktop");
-    usableList(first);
-    overflow(first);
-    select(first, "Position", "PG");
-    select(
-      first,
-      "NBA team",
-      source.players.find(
-        (player: { name: string; team: string }) =>
-          player.name === "Trae Young",
-      ).team,
-    );
-    await waitFor(
-      () =>
-        evaluate(
-          first,
-          "return [...document.querySelectorAll('.players-panel tbody .player-name strong')].map(element=>element.innerText).includes('Trae Young');",
-        ),
-      "actual filtered player result",
-    );
-    select(first, "NBA team", "");
-    select(first, "Position", "");
-    click(first, /PTS ↓/);
-    select(first, "Stats", "total");
-    select(first, "Stats", "game");
-    await searchPlayer(first, "Luka Doncic");
-    click(first, "Player details");
-    shot(first, "player-detail-desktop");
-    click(first, "Close details");
-    await draft(first, "Luka Doncic", 1, state);
-    click(first, "Undo latest");
-    click(first, "Confirm undo");
-    await waitFor(
-      () => state().picks.length === 0 && state().phase === "paused",
-      "undo",
-    );
-    click(first, "Resume");
-    await draft(first, "Luka Doncic", 1, state);
-    await draft(second, "Shai Gilgeous-Alexander", 2, state);
-    await draft(second, "Victor Wembanyama", 3, state);
-    await draft(first, "Trae Young", 4, state);
-    click(first, "Roster");
-    select(first, "View team", "1");
-    assert.ok(snapshot(first).includes("Victor Wembanyama"));
-    click(first, "My team");
-    const myRoster = evaluate(
-      first,
-      "return [...document.querySelectorAll('.roster-list li')].map(element=>element.innerText);",
-    );
-    assert.ok(
-      myRoster.some(
-        (row: string) => row.startsWith("G\n") && row.includes("Luka Doncic"),
-      ),
-    );
-    click(first, "Players");
-    fill(first, "Search players", "Nikola Jokic");
-    click(first, "Board");
-    shot(first, "board-desktop");
-    click(first, "Players");
-    assert.equal(
-      evaluate(
-        first,
-        "return document.querySelector('input[type=search]').value;",
-      ),
-      "Nikola Jokic",
-    );
-    fill(first, "Search players", "");
-    cli(first, ["set", "viewport", "900", "800"]);
-    shot(first, "live-intermediate");
-    usableList(first);
-    overflow(first);
-    cli(first, ["set", "viewport", "1440", "1000"]);
-    click(second, "Players");
-    fill(second, "Search players", "");
-    shot(second, "live-phone");
-    usableList(second);
-    click(second, "Select Giannis Antetokounmpo");
-    const selectedScroll = evaluate(
-      second,
-      "return document.querySelector('.table-scroll').scrollTop;",
-    );
-    if (selectedScroll > 0)
-      cli(second, [
-        "scroll",
-        "up",
-        String(selectedScroll),
-        "--selector",
-        ".table-scroll",
-      ]);
-    shot(second, "selected-phone");
-    usableList(second);
-    overflow(second);
-    click(second, /Queue \(/);
-    shot(second, "queue-phone");
-    click(second, "Roster");
-    shot(second, "roster-phone");
-    click(second, "Board");
-    shot(second, "board-phone");
-    overflow(second);
-    cli(second, ["set", "offline", "on"]);
-    await pause(3000);
-    assert.ok(snapshot(second).includes("Disconnected"));
-    shot(second, "offline-phone");
-    cli(second, ["set", "offline", "off"]);
-    await waitFor(() => snapshot(second).includes("Connected"), "reconnected");
-    cli(recovered, ["open", url]);
-    cli(recovered, ["set", "viewport", "390", "844"]);
-    await waitFor(
-      () => snapshot(recovered).includes("Recover your team"),
-      "recovery page",
-    );
-    cli(recovered, ["scrollintoview", ".recovery-panel summary"]);
-    cli(recovered, ["click", ".recovery-panel summary"]);
-    fill(recovered, "Recovery code", recovery, "textbox", true);
-    click(recovered, "Recover team");
-    await waitFor(
-      () =>
-        evaluate(
-          recovered,
-          `return fetch('/api/rooms/${id}').then(response=>response.json()).then(state=>state.me?.slot);`,
-        ) === 1,
-      "cross device recovery",
-    );
-    click(recovered, "Players");
-    shot(recovered, "live-phone-wide");
-    usableList(recovered);
-    cli(second, ["reload"]);
-    await waitFor(
-      () => snapshot(second).includes("My needs"),
-      "ownership refresh",
-    );
-    click(first, "Pick for on-clock team", "checkbox");
-    await draft(first, "Jalen Brunson", 5, state);
-    click(first, "Pick for on-clock team", "checkbox");
-    await draft(first, "Nikola Jokic", 6, state);
-    const finalState = state();
-    assert.equal(finalState.phase, "complete");
-    assert.deepEqual(
-      finalState.picks.map((pick: { slot: number }) => pick.slot),
-      [0, 1, 1, 0, 1, 0],
-    );
-    assert.equal(finalState.picks[4].source, "commissioner");
-    click(first, "Board");
-    shot(first, "complete-desktop");
-    click(second, "Board");
-    shot(second, "complete-phone");
-    click(first, "Players");
-    fill(first, "Search players", "");
-    cli(first, ["scroll", "down", "480", "--selector", ".table-scroll"]);
-    cli(first, ["scroll", "right", "100", "--selector", ".table-scroll"]);
-    const savedScroll = evaluate(
-      first,
-      "return {top:document.querySelector('.table-scroll').scrollTop,left:document.querySelector('.table-scroll').scrollLeft};",
-    );
-    assert.ok(savedScroll.top > 0);
-    click(first, "Board");
-    click(first, "Players");
-    assert.deepEqual(
-      evaluate(
-        first,
-        "return {top:document.querySelector('.table-scroll').scrollTop,left:document.querySelector('.table-scroll').scrollLeft};",
-      ),
-      savedScroll,
-    );
-    fill(first, "Search players", "Giannis Antetokounmpo");
-    click(first, "Select Giannis Antetokounmpo");
-    click(first, "Roster");
-    click(first, "Players");
-    assert.equal(
-      evaluate(
-        first,
-        "return document.querySelector('input[type=search]').value;",
-      ),
-      "Giannis Antetokounmpo",
-    );
-    assert.ok(snapshot(first).includes("Draft Giannis Antetokounmpo"));
-    for (const kind of ["order", "picks", "rosters"]) {
-      cli(first, [
-        "scrollintoview",
-        element(first, "link", `Export ${kind} CSV`),
-      ]);
-      cli(first, [
-        "download",
-        element(first, "link", `Export ${kind} CSV`),
-        `${evidence}/${kind}.csv`,
-      ]);
-    }
-    evaluate(
-      first,
-      "window.scrollTo(0, document.documentElement.scrollHeight); return true;",
-    );
-    const footer = evaluate(
-      first,
-      "return {bottom:document.querySelector('.data-footer').getBoundingClientRect().bottom,tray:document.querySelector('.selection-tray').getBoundingClientRect().top};",
-    );
-    assert.ok(
-      footer.bottom <= footer.tray,
-      `Footer overlaps action bar: ${JSON.stringify(footer)}`,
-    );
-    for (const session of sessions) {
-      assert.deepEqual(cli(session, ["errors"]).errors ?? [], []);
-      assert.deepEqual(cli(session, ["console"]).messages ?? [], []);
-      overflow(session);
-    }
-    writeFileSync(
-      `${evidence}/browser-results.json`,
-      JSON.stringify(
-        {
-          completedAt: new Date().toISOString(),
-          origin,
-          id,
-          picks: finalState.picks,
-          preservedListScroll: savedScroll,
-          selectionPreservedAcrossViews: true,
-          viewports: ["1440x1000", "900x800", "320x568", "390x844"],
-          result: "PASS",
-          screenshotInspection:
-            process.env.CAPTURE_TRANSPORT === "none"
-              ? "UNPROVEN: screenshots unavailable; see capture-unavailable.jsonl"
-              : "Open images separately before claiming visual proof",
-        },
-        null,
-        2,
-      ),
-    );
-    console.log(
-      process.env.CAPTURE_TRANSPORT === "none"
-        ? "Complete multi-manager functional acceptance passed. Screenshots are unavailable."
-        : "Complete multi-manager UI acceptance passed. Screenshots require visual inspection.",
-    );
-  } finally {
-    for (const session of sessions) {
-      try {
-        cli(session, ["close"]);
-      } catch {}
-    }
-    writeFileSync(
-      `${evidence}/browser-sessions-after.txt`,
-      execFileSync("agent-browser", ["session", "list"], { encoding: "utf8" }),
-    );
-  }
-}
-export {
+import { pickOrder } from "../lib/rules";
+import {
+  api,
   cli,
   click,
-  fill,
-  select,
-  waitFor,
+  evidence,
+  dimensions,
+  errors,
   evaluate,
+  fill,
+  find,
+  origin,
+  record,
+  save,
   shot,
-  snapshot,
-  overflow,
-  usableList,
+  sleep,
+  text,
+  viewport,
+  waitFor,
+} from "./browser/lib";
+
+const tag = process.env.RUN_TAG ?? "local";
+// Session names are task-scoped so a shared browser daemon never touches other runs.
+const prefix = process.env.SESSION_PREFIX ?? "nba-t167";
+const [A, B, C, D, E] = ["a", "b", "c", "d", "e"].map(
+  (name) => `${prefix}-${name}`,
+);
+const sizes: Record<string, [number, number]> = {
+  [A]: [390, 844],
+  [B]: [1440, 900],
+  [C]: [820, 1180],
+  [D]: [375, 667],
+  [E]: [1280, 720],
 };
-if (process.argv[1]?.endsWith("browser-acceptance.ts"))
-  main().catch((error) => {
-    console.error(error.message);
-    process.exitCode = 1;
-  });
+const label: Record<string, string> = {
+  [A]: "mobile",
+  [B]: "desktop",
+  [C]: "tablet",
+  [D]: "small",
+  [E]: "laptop",
+};
+let roomUrl = "",
+  roomId = "";
+const step = (session: string, screen: string) => {
+  dimensions(session, `${label[session]}-${screen}`);
+  shot(session, `${tag}-${label[session]}-${screen}`);
+};
+function open(session: string, url: string) {
+  viewport(session, ...sizes[session]);
+  cli(session, ["open", url]);
+}
+function tab(session: string, name: string) {
+  const ref = find(session, "button", new RegExp(`^${name}( \\d+)?$`), false);
+  if (
+    ref &&
+    evaluate(
+      session,
+      `return getComputedStyle([...document.querySelectorAll('.tabs button')].find(b => b.textContent.startsWith('${name}'))).display !== 'none'`,
+    )
+  )
+    cli(session, ["click", ref]);
+}
+function menu(session: string, openIt: boolean) {
+  const isOpen = evaluate(
+    session,
+    "return document.querySelector('.menu').open",
+  );
+  if (isOpen !== openIt) cli(session, ["click", ".menu summary"]);
+}
+function state(session = A) {
+  return api(session, roomId);
+}
+function waitPicks(count: number, session = A, ms = 20000) {
+  waitFor(
+    session,
+    `picks ${count}`,
+    () => state(session).picks.length >= count,
+    ms,
+  );
+}
+function draftTop(session: string, filter?: string) {
+  tab(session, "Players");
+  const before = state(session).picks.length;
+  if (filter) fill(session, "Search players", filter, "searchbox");
+  const names: string[] = evaluate(
+    session,
+    "return [...document.querySelectorAll('.player-table tbody tr:not(.taken) button.item')].slice(0, 25).map((b) => b.getAttribute('aria-label').replace(/^Select /, ''));",
+  );
+  for (const name of names) {
+    click(session, `Select ${name}`);
+    waitFor(
+      session,
+      `selected ${name}`,
+      () => !!find(session, "button", `Draft ${name}`, false),
+      5000,
+    );
+    const draft = find(session, "button", `Draft ${name}`)!;
+    sleep(150);
+    if (!cli(session, ["is", "enabled", draft]).enabled) continue;
+    cli(session, ["click", draft]);
+    waitPicks(before + 1, session);
+    if (filter) fill(session, "Search players", "", "searchbox");
+    return name;
+  }
+  throw new Error(`No eligible player for ${session}`);
+}
+function owner(slot: number, ownerOf: Record<number, string>) {
+  return ownerOf[slot];
+}
+
+// --- Create and lobby -------------------------------------------------------
+open(A, origin);
+step(A, "create");
+fill(A, "Room name", `${process.env.ROOM_PREFIX ?? "t_167eb983"} ${tag} draft`);
+fill(A, "Your name", "Ava");
+fill(A, "Teams", "3", "spinbutton");
+fill(A, "Seconds/pick", "30", "spinbutton");
+assert.match(text(A), /Custom rules/);
+click(A, "Create room");
+waitFor(
+  A,
+  "room url",
+  () => /\/room\//.test(cli(A, ["get", "url"]).url),
+  30000,
+);
+roomUrl = cli(A, ["get", "url"]).url;
+roomId = roomUrl.split("/room/")[1];
+record({ kind: "room", roomId, tag });
+waitFor(A, "lobby", () => /0\/3 ready/.test(text(A)), 30000);
+step(A, "lobby");
+click(A, "Show code");
+const commissionerCode = evaluate(
+  A,
+  "return document.querySelector('.alert code').textContent",
+);
+click(A, "Saved · hide");
+click(A, "Claim team 1");
+fill(A, "Manager name", "Ava");
+click(A, "Join team 1");
+waitFor(A, "A claimed", () => state(A).me?.slot === 0);
+
+open(C, roomUrl);
+waitFor(C, "C lobby", () => /ready/.test(text(C)), 30000);
+click(C, "Claim team 2");
+fill(C, "Manager name", "Cy");
+click(C, "Join team 2");
+waitFor(C, "C claimed 2", () => state(C).me?.slot === 1);
+click(C, "Switch to team 3");
+click(C, "Move to team 3");
+waitFor(C, "C switched to 3", () => state(C).me?.slot === 2);
+record({
+  kind: "flow",
+  name: "switch team",
+  ok: true,
+  slots: state(C).members,
+});
+
+open(B, roomUrl);
+waitFor(B, "B lobby", () => /ready/.test(text(B)), 30000);
+click(B, "Claim team 2");
+fill(B, "Manager name", "Ben");
+click(B, "Join team 2");
+waitFor(B, "B claimed", () => state(B).me?.slot === 1);
+step(B, "lobby");
+
+// C leaves, then rejoins the same team.
+menu(C, true);
+click(C, "Leave room…");
+click(C, "Leave room");
+waitFor(C, "C left", () => state(C).me === null);
+assert.equal(
+  state(A).members.some((m: { slot: number }) => m.slot === 2),
+  false,
+);
+record({ kind: "flow", name: "leave in lobby", ok: true });
+click(C, "Claim team 3");
+fill(C, "Manager name", "Cy");
+click(C, "Join team 3");
+waitFor(C, "C rejoined", () => state(C).me?.slot === 2);
+record({ kind: "flow", name: "rejoin in lobby", ok: true });
+step(C, "lobby");
+
+// Commissioner edits settings in the lobby; ready flags reset.
+click(B, "Ready");
+waitFor(B, "B ready", () => state(B).me?.ready === true);
+click(A, "League settings");
+step(A, "settings");
+assert.match(text(A), /3RR is this app's default/);
+fill(A, "Seconds/pick", "25", "spinbutton");
+click(A, "Save");
+waitFor(A, "settings saved", () => state(A).settings.seconds === 25);
+assert.equal(state(B).me.ready, false, "settings clear ready");
+record({ kind: "flow", name: "lobby settings edit clears ready", ok: true });
+
+// Queue building before the draft (phone).
+tab(A, "Players");
+const queued: string[] = evaluate(
+  A,
+  "return [...document.querySelectorAll('.player-table tbody button.item')].slice(3, 6).map((b) => b.getAttribute('aria-label').replace(/^Select /, ''));",
+);
+for (const name of queued) {
+  click(A, `Queue ${name}`);
+  waitFor(
+    A,
+    `queued ${name}`,
+    () => state(A).queue.length >= queued.indexOf(name) + 1,
+  );
+}
+tab(A, "Queue");
+click(A, `Move ${queued[2]} up`);
+waitFor(
+  A,
+  "reordered",
+  () =>
+    state(A).queue[1] === state(A).queue[1] &&
+    evaluate(
+      A,
+      "return document.querySelector('.queue-list li:nth-child(2) strong').textContent",
+    ) === queued[2],
+);
+click(A, `Remove ${queued[0]} from queue`);
+waitFor(A, "removed", () => state(A).queue.length === 2);
+step(A, "queue");
+record({ kind: "flow", name: "queue add/reorder/remove", ok: true });
+
+// Ben queues two players for a timeout pick.
+tab(B, "Players");
+const benQueue: string[] = evaluate(
+  B,
+  "return [...document.querySelectorAll('.player-table tbody button.item')].slice(10, 12).map((b) => b.getAttribute('aria-label').replace(/^Select /, ''));",
+);
+for (const name of benQueue) {
+  click(B, `Queue ${name}`);
+  waitFor(
+    B,
+    `B queued ${name}`,
+    () => state(B).queue.length >= benQueue.indexOf(name) + 1,
+  );
+}
+
+for (const session of [A, B, C]) {
+  tab(session, "Lobby");
+  click(session, "Ready");
+}
+waitFor(
+  A,
+  "all ready",
+  () =>
+    state(A).members.filter((m: { ready: boolean }) => m.ready).length === 3,
+);
+click(A, "Start draft");
+waitFor(A, "live", () => state(A).phase === "live");
+record({
+  kind: "flow",
+  name: "start without stale-data acknowledgment",
+  ok: true,
+});
+waitFor(C, "C sees live players", () =>
+  evaluate(
+    C,
+    "const p = document.querySelector('.players-panel'); return !!p && getComputedStyle(p).visibility === 'visible';",
+  ),
+);
+record({
+  kind: "flow",
+  name: "lobby tab falls back to players at start",
+  ok: true,
+});
+const order = pickOrder(state(A).settings);
+assert.deepEqual(
+  order.slice(0, 12),
+  [0, 1, 2, 2, 1, 0, 2, 1, 0, 0, 1, 2],
+  "3RR order",
+);
+
+// --- Draft -----------------------------------------------------------------
+const ownerOf: Record<number, string> = { 0: A, 1: B, 2: C };
+// Pick 1: search on the phone.
+tab(A, "Players");
+fill(A, "Search players", "Jok", "searchbox");
+step(A, "players-search");
+draftTop(A, "Jok");
+step(A, "players-live");
+// Pick 2: Ben times out; queue supplies the pick.
+const timeoutStart = Date.now();
+waitPicks(2, A, 45000);
+const second = state(A).picks[1];
+record({
+  kind: "flow",
+  name: "timeout uses queue",
+  ok: second.source === "queue",
+  source: second.source,
+  waitedMs: Date.now() - timeoutStart,
+});
+assert.equal(second.source, "queue");
+// Pick 3: commissioner picks for Cy's team.
+cli(A, ["check", find(A, "checkbox", "Pick for team on clock")!]);
+draftTop(A);
+cli(A, ["uncheck", find(A, "checkbox", "Pick for team on clock")!]);
+assert.equal(state(A).picks[2].source, "commissioner");
+record({
+  kind: "flow",
+  name: "commissioner picks for team on clock",
+  ok: true,
+});
+// Pick 4: Cy on the tablet, then Cy leaves mid-draft.
+step(C, "live");
+draftTop(C);
+menu(C, true);
+click(C, "Leave room…");
+click(C, "Leave room");
+waitFor(C, "C left live", () => state(C).me === null);
+record({ kind: "flow", name: "leave mid-draft keeps team", ok: true });
+// Pick 5: Ben, then Ben recovers on a second device while the commissioner pauses.
+draftTop(B);
+click(A, "Pause");
+waitFor(A, "paused for recovery", () => state(A).phase === "paused");
+menu(B, true);
+click(B, "Show");
+const benCode = evaluate(
+  B,
+  "return document.querySelector('.code-row code').textContent",
+);
+menu(B, false);
+open(E, roomUrl);
+waitFor(E, "E loaded", () => /Players/.test(text(E)), 30000);
+menu(E, true);
+fill(E, "Recovery code", benCode, "textbox", true);
+click(E, "Recover team");
+waitFor(E, "E recovered", () => state(E).me?.slot === 1);
+assert.equal(
+  state(E).queue.length,
+  state(B).queue.length,
+  "queue follows recovery",
+);
+menu(E, false);
+record({ kind: "flow", name: "cross-device recovery", ok: true });
+step(E, "live");
+click(A, "Resume");
+waitFor(A, "resumed for A", () => state(A).phase === "live");
+// Pick 6: Ava drafts, pauses, resumes, then undoes and redrafts.
+draftTop(A);
+click(A, "Pause");
+waitFor(A, "paused", () => state(A).phase === "paused");
+step(A, "paused");
+click(A, "Resume");
+waitFor(A, "resumed", () => state(A).phase === "live");
+click(A, "Undo");
+click(A, "Confirm undo");
+waitFor(
+  A,
+  "undone",
+  () => state(A).picks.length === 5 && state(A).phase === "paused",
+);
+click(A, "Resume");
+waitFor(A, "resumed after undo", () => state(A).phase === "live");
+draftTop(A);
+record({ kind: "flow", name: "pause/resume/undo", ok: true });
+// Pick 7: team 3 has no owner. Dee claims it on a small phone during a pause.
+click(A, "Pause");
+waitFor(A, "paused for claim", () => state(A).phase === "paused");
+open(D, roomUrl);
+waitFor(D, "D loaded", () => /Open team/.test(text(D)), 30000);
+step(D, "claim-open-team");
+click(D, /^Claim (Team 3|Cy)$/);
+fill(D, "Manager name", "Dee");
+click(D, "Join team 3");
+waitFor(D, "D owns team 3", () => state(D).me?.slot === 2);
+ownerOf[2] = D;
+record({ kind: "flow", name: "reclaim departed team mid-draft", ok: true });
+click(A, "Resume");
+waitFor(A, "resumed for D", () => state(A).phase === "live");
+draftTop(D);
+step(D, "live");
+// Pick 8: Ben from the recovered device.
+ownerOf[1] = E;
+draftTop(E);
+// Pick 9: Ava, then hands the commissioner role to Ben.
+draftTop(A);
+menu(A, true);
+step(A, "menu");
+cli(A, ["select", find(A, "combobox", "Hand off commissioner")!, "1"]);
+waitFor(A, "handed off", () => state(A).me.commissioner === false);
+menu(A, false);
+waitFor(E, "E commissioner", () => !!find(E, "button", "Pause", false));
+record({ kind: "flow", name: "commissioner hand-off", ok: true });
+// Offline: draft actions disable; reconnect restores them.
+cli(A, ["set", "offline", "on"]);
+waitFor(A, "offline banner", () => /Offline/.test(text(A)), 20000);
+step(A, "offline");
+cli(A, ["set", "offline", "off"]);
+waitFor(A, "online", () => !/Offline/.test(text(A)), 20000);
+record({ kind: "flow", name: "offline and reconnect", ok: true });
+
+// Remaining picks by whoever is on the clock.
+let shots = 0;
+while (state(A).phase !== "complete") {
+  const room = state(A);
+  if (room.phase === "paused") throw new Error(`Paused: ${room.message}`);
+  const session = owner(order[room.picks.length], ownerOf);
+  draftTop(session);
+  if (room.picks.length === 20 && shots++ === 0) {
+    tab(A, "Board");
+    step(A, "board-mid");
+    tab(A, "Roster");
+    step(A, "roster-mid");
+    step(B, "live-mid");
+    step(C, "viewer-mid");
+  }
+}
+const final = state(A);
+assert.equal(final.picks.length, 39);
+assert.deepEqual(
+  final.picks.map((p: { slot: number }) => p.slot),
+  order,
+);
+assert.equal(
+  new Set(final.picks.map((p: { playerId: number }) => p.playerId)).size,
+  39,
+);
+record({
+  kind: "flow",
+  name: "complete draft",
+  ok: true,
+  picks: final.picks.length,
+  sources: final.picks.map((p: { source: string }) => p.source),
+});
+save(`${tag}-final-room.json`, { ...final, catalog: undefined });
+
+// Completed screens and exports.
+for (const session of [A, B, D, E]) {
+  tab(session, "Board");
+  step(session, "complete-board");
+}
+tab(A, "Roster");
+step(A, "complete-roster");
+tab(B, "Players");
+click(B, /^Select /);
+click(B, /^Open details for /);
+step(B, "details");
+click(B, "Close details");
+menu(A, true);
+for (const kind of ["order", "picks", "rosters"]) {
+  const ref = find(A, "link", `${kind} CSV`)!;
+  cli(A, ["download", ref, `${evidence}/${tag}-${kind}.csv`]);
+}
+record({ kind: "flow", name: "exports downloaded", ok: true });
+for (const session of [A, B, C, D, E]) errors(session, "end");
+console.log(
+  JSON.stringify({
+    done: true,
+    roomId,
+    commissionerCodeSaved: !!commissionerCode,
+  }),
+);
+for (const session of [A, B, C, D, E]) cli(session, ["close"]);

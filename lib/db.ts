@@ -6,7 +6,7 @@ export function database() {
   const connection = new URL(process.env.DATABASE_URL);
   if (connection.searchParams.get("sslmode") === "require")
     connection.searchParams.set("sslmode", "verify-full");
-  if (!globalDatabase.nbaPool)
+  if (!globalDatabase.nbaPool) {
     globalDatabase.nbaPool = new Pool({
       connectionString: connection.toString(),
       max: 3,
@@ -14,5 +14,21 @@ export function database() {
       connectionTimeoutMillis: 15000,
       application_name: "nba-draft",
     });
+    // The server may reset idle connections. The pool drops that client; the next checkout reconnects.
+    globalDatabase.nbaPool.on("error", () => {});
+  }
   return globalDatabase.nbaPool;
+}
+// Opens a transaction, retrying once when a pooled connection is already dead.
+export async function begin() {
+  for (let attempt = 0; ; attempt++) {
+    const client = await database().connect();
+    try {
+      await client.query("BEGIN");
+      return client;
+    } catch (error) {
+      client.release(true);
+      if (attempt) throw error;
+    }
+  }
 }

@@ -57,7 +57,7 @@ async function main() {
   check(
     "invalid settings reject",
     await request("/api/rooms", {
-      name: "t_d4c47e94 invalid",
+      name: "t_167eb983 invalid",
       commissioner: "Commissioner",
       settings: { ...defaultSettings, seconds: 0 },
     }),
@@ -73,7 +73,7 @@ async function main() {
     fallback: "FP",
   };
   const created = await request("/api/rooms", {
-    name: "t_d4c47e94 HTTP acceptance",
+    name: "t_167eb983 HTTP acceptance",
     commissioner: "HTTP A",
     settings,
   });
@@ -90,7 +90,7 @@ async function main() {
   );
   check(
     "start rejects unready teams",
-    await request(path, action("start", { acknowledge: true }), owner),
+    await request(path, action("start"), owner),
     409,
   );
   const claimRequests = [
@@ -179,11 +179,7 @@ async function main() {
     await request(path, action("ready", { ready: true }), owner),
     200,
   );
-  check(
-    "start succeeds",
-    await request(path, action("start", { acknowledge: true }), owner),
-    200,
-  );
+  check("start succeeds", await request(path, action("start"), owner), 200);
   check(
     "manager cannot impersonate commissioner",
     await request(
@@ -257,6 +253,24 @@ async function main() {
       /attachment/,
     );
     assert.ok(exported.text.includes("draft_id"));
+  }
+  const expiry = (authorization?: string) =>
+    fetch(`${origin}/api/cron/expire?dryRun=1`, {
+      headers: authorization ? { Authorization: authorization } : {},
+    });
+  assert.equal((await expiry()).status, 401);
+  results.push({ check: "Expiry route rejects missing secret", status: 401 });
+  assert.equal((await expiry("Bearer wrong")).status, 401);
+  results.push({ check: "Expiry route rejects wrong secret", status: 401 });
+  if (process.env.CRON_SECRET) {
+    const dry = await expiry(`Bearer ${process.env.CRON_SECRET}`);
+    assert.equal(dry.status, 200);
+    assert.deepEqual(Object.keys(await dry.json()), [
+      "candidates",
+      "expired",
+      "kept",
+    ]);
+    results.push({ check: "Expiry dry run with secret", status: 200 });
   }
   writeFileSync(
     `${evidence}/http-results.json`,
