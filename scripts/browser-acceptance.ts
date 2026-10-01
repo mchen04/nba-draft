@@ -154,6 +154,7 @@ click(A, "Show code");
 const commissionerCode = evaluate(
   A,
   "return document.querySelector('.alert code').textContent",
+  true,
 );
 click(A, "Saved · hide");
 click(A, "Claim team 1");
@@ -342,6 +343,7 @@ click(B, "Show");
 const benCode = evaluate(
   B,
   "return document.querySelector('.code-row code').textContent",
+  true,
 );
 menu(B, false);
 open(E, roomUrl);

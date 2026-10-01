@@ -39,8 +39,8 @@ export function cli(session: string, args: string[], secret = false) {
       JSON.stringify({
         at: new Date().toISOString(),
         session,
-        args,
-        failed: message.slice(0, 500),
+        args: secret ? [args[0], "<private>"] : args,
+        failed: secret ? "<private>" : message.slice(0, 500),
       }) + "\n",
     );
     throw new Error(
@@ -123,8 +123,8 @@ export function fill(
   if (value !== text)
     throw new Error(`Field ${name} has ${secret ? "<private>" : value}`);
 }
-export function evaluate(session: string, body: string) {
-  return cli(session, ["eval", `(() => { ${body} })()`]).result;
+export function evaluate(session: string, body: string, secret = false) {
+  return cli(session, ["eval", `(() => { ${body} })()`], secret).result;
 }
 export function text(session: string) {
   return evaluate(session, "return document.body.innerText;") as string;
