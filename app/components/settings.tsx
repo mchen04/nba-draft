@@ -1,5 +1,6 @@
 "use client";
 import { Settings, categoryStats, countingStats, slots } from "@/lib/model";
+import { useState } from "react";
 
 export function SettingsEditor({
   settings,
@@ -8,6 +9,9 @@ export function SettingsEditor({
   settings: Settings;
   onChange: (settings: Settings) => void;
 }) {
+  const [orderText, setOrderText] = useState(
+    settings.order.map((slot) => slot + 1).join(","),
+  );
   const update = (changes: Partial<Settings>) =>
     onChange({ ...settings, ...changes });
   return (
@@ -21,6 +25,12 @@ export function SettingsEditor({
           value={settings.teamCount}
           onChange={(event) => {
             const count = Number(event.target.value);
+            setOrderText(
+              Array.from(
+                { length: Math.min(20, Math.max(0, count)) },
+                (_, index) => index + 1,
+              ).join(","),
+            );
             update({
               teamCount: count,
               order: Array.from(
@@ -66,15 +76,15 @@ export function SettingsEditor({
       <label className="wide">
         Draft order (team numbers, separated by commas)
         <input
-          key={settings.teamCount}
-          defaultValue={settings.order.map((slot) => slot + 1).join(",")}
-          onBlur={(event) =>
+          value={orderText}
+          onChange={(event) => {
+            setOrderText(event.target.value);
             update({
               order: event.target.value
                 .split(",")
                 .map((input) => Number(input.trim()) - 1),
-            })
-          }
+            });
+          }}
         />
       </label>
       <p className="wide hint">

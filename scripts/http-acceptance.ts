@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { defaultSettings } from "../lib/model";
 
@@ -42,6 +42,9 @@ function check(
 }
 const action = (type: string, fields = {}) => ({
   type,
+  ...(type === "claim"
+    ? { retryCredential: randomBytes(32).toString("hex") }
+    : {}),
   ...fields,
   requestId: randomUUID(),
 });
@@ -90,10 +93,13 @@ async function main() {
     await request(path, action("start", { acknowledge: true }), owner),
     409,
   );
-  const claims = await Promise.all([
-    request(path, action("claim", { slot: 1, name: "HTTP B" })),
-    request(path, action("claim", { slot: 1, name: "HTTP C" })),
-  ]);
+  const claimRequests = [
+    action("claim", { slot: 1, name: "HTTP B" }),
+    action("claim", { slot: 1, name: "HTTP C" }),
+  ];
+  const claims = await Promise.all(
+    claimRequests.map((claim) => request(path, claim)),
+  );
   assert.deepEqual(
     claims.map((result) => result.response.status).sort(),
     [200, 409],
@@ -101,6 +107,33 @@ async function main() {
   results.push({ check: "HTTP concurrent claim exactly one", status: 200 });
   const manager = claims.find((result) => result.response.status === 200)!;
   assert.ok(manager.cookie);
+  const savedClaim = claimRequests[claims.indexOf(manager)];
+  const lostReplay = await request(path, savedClaim);
+  check(
+    "complete lost claim response restores private credentials without original cookie",
+    lostReplay,
+    200,
+  );
+  assert.equal(lostReplay.cookie, manager.cookie);
+  assert.equal(lostReplay.data.recoveryCode, manager.data.recoveryCode);
+  check(
+    "claim retry also accepts the delivered ownership cookie",
+    await request(path, savedClaim, manager.cookie),
+    200,
+  );
+  check(
+    "request ID alone cannot retrieve claim secrets",
+    await request(path, {
+      ...savedClaim,
+      retryCredential: randomBytes(32).toString("hex"),
+    }),
+    409,
+  );
+  check(
+    "claim requires a private retry credential",
+    await request(path, { ...savedClaim, retryCredential: undefined }),
+    400,
+  );
   const pool = (await request(`${path}?catalog=1`)).data;
   const candidate = pool.players.find(
     (player: { positions: string[]; projected: boolean }) =>

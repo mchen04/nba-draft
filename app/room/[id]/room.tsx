@@ -66,13 +66,19 @@ export default function DraftRoom({ id }: { id: string }) {
   const [settings, setSettings] = useState<Settings | null>(null),
     [settingsOpen, setSettingsOpen] = useState(false),
     [acknowledge, setAcknowledge] = useState(false),
-    [undo, setUndo] = useState(false),
+    [undo, setUndo] = useState<{
+      index: number;
+      playerId: number;
+      version: number;
+      name: string;
+    } | null>(null),
     [forTeam, setForTeam] = useState(false);
   const [retry, setRetry] = useState<{ body: string; label: string } | null>(
     null,
   );
   const fetching = useRef(false),
     latestVersion = useRef(-1),
+    readGeneration = useRef(0),
     sortInitialized = useRef(false);
   const pendingAction = useRef<AbortController | null>(null);
   const accept = useCallback((view: View) => {
@@ -86,6 +92,7 @@ export default function DraftRoom({ id }: { id: string }) {
   const load = useCallback(async () => {
     if (fetching.current) return;
     fetching.current = true;
+    const generation = readGeneration.current;
     try {
       const response = await fetch(`/api/rooms/${id}`, {
         cache: "no-store",
@@ -93,7 +100,7 @@ export default function DraftRoom({ id }: { id: string }) {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
-      accept(result);
+      if (generation === readGeneration.current) accept(result);
     } catch {
       setConnected(false);
     } finally {
@@ -113,6 +120,13 @@ export default function DraftRoom({ id }: { id: string }) {
     load();
     loadCatalog().catch((failure) => setError(failure.message));
     setRecoveryCode(sessionStorage.getItem(`recovery_${id}`) ?? "");
+    const pendingClaim = sessionStorage.getItem(`claim_retry_${id}`);
+    if (pendingClaim) {
+      setRetry(JSON.parse(pendingClaim));
+      setError(
+        "The claim may already be saved. Retry the saved request to restore your team.",
+      );
+    }
     const poll = setInterval(load, 2000),
       tick = setInterval(() => setNow(Date.now()), 250);
     const reconnect = () => load();
@@ -165,7 +179,23 @@ export default function DraftRoom({ id }: { id: string }) {
     setNotice("");
     const payload =
       savedBody ??
-      JSON.stringify({ ...command, requestId: crypto.randomUUID() });
+      JSON.stringify({
+        ...command,
+        ...(command.type === "claim"
+          ? {
+              retryCredential: Array.from(
+                crypto.getRandomValues(new Uint8Array(32)),
+                (byte) => byte.toString(16).padStart(2, "0"),
+              ).join(""),
+            }
+          : {}),
+        requestId: crypto.randomUUID(),
+      });
+    if (command.type === "claim")
+      sessionStorage.setItem(
+        `claim_retry_${id}`,
+        JSON.stringify({ body: payload, label }),
+      );
     const controller = new AbortController();
     pendingAction.current = controller;
     const timeout = setTimeout(() => controller.abort(), 30000);
@@ -179,10 +209,15 @@ export default function DraftRoom({ id }: { id: string }) {
       const result = await response.json();
       if (!response.ok) {
         setRetry(null);
+        if (command.type === "claim")
+          sessionStorage.removeItem(`claim_retry_${id}`);
         throw new Error(result.error);
       }
+      readGeneration.current++;
       accept(result);
       setRetry(null);
+      if (command.type === "claim")
+        sessionStorage.removeItem(`claim_retry_${id}`);
       setNotice(label);
       if (result.recoveryCode) {
         setRecoveryCode(result.recoveryCode);
@@ -681,7 +716,21 @@ export default function DraftRoom({ id }: { id: string }) {
                 </button>
                 <button
                   disabled={!room.picks.length || busy || !connected}
-                  onClick={() => setUndo(!undo)}
+                  onClick={() => {
+                    const pick = room.picks.at(-1)!;
+                    setUndo(
+                      undo
+                        ? null
+                        : {
+                            index: currentIndex,
+                            playerId: pick.playerId,
+                            version: room.version,
+                            name:
+                              playerMap.get(pick.playerId)?.name ??
+                              String(pick.playerId),
+                          },
+                    );
+                  }}
                 >
                   Undo latest
                 </button>
@@ -700,20 +749,25 @@ export default function DraftRoom({ id }: { id: string }) {
       </div>
       {undo && (
         <div className="banner warning">
-          Undo {playerMap.get(room.picks.at(-1)?.playerId ?? -1)?.name} (pick{" "}
-          {currentIndex})? The room pauses with a full clock.
+          Undo {undo.name} (pick {undo.index})? The room pauses with a full
+          clock.
           <button
             onClick={() => {
               send(
-                { type: "undo", expectedIndex: currentIndex },
+                {
+                  type: "undo",
+                  expectedIndex: undo.index,
+                  expectedPlayerId: undo.playerId,
+                  expectedVersion: undo.version,
+                },
                 "Latest pick undone",
               );
-              setUndo(false);
+              setUndo(null);
             }}
           >
             Confirm undo
           </button>
-          <button onClick={() => setUndo(false)}>Cancel</button>
+          <button onClick={() => setUndo(null)}>Cancel</button>
         </div>
       )}
       {room.phase === "lobby" && (

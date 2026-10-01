@@ -1,6 +1,7 @@
 import { z as zod } from "zod";
 import { Catalog, Player, Slot, Stat, statIds } from "./model";
 import { database } from "./db";
+import { PoolClient } from "pg";
 
 const teamNames = [
   "FA",
@@ -202,62 +203,73 @@ export async function fetchEspn(season: number): Promise<Catalog> {
 export async function getCatalog(
   season: number,
   force = false,
+  transaction?: PoolClient,
 ): Promise<Catalog> {
+  if (transaction) {
+    const catalog = await readCatalog(transaction, season, force);
+    if (catalog instanceof Error) throw catalog;
+    return catalog;
+  }
   const client = await database().connect();
   try {
     await client.query("BEGIN");
-    await client.query(
-      "INSERT INTO nba_draft.catalogs(season) VALUES($1) ON CONFLICT DO NOTHING",
-      [season],
-    );
-    const result = await client.query(
-      "SELECT * FROM nba_draft.catalogs WHERE season=$1 FOR UPDATE",
-      [season],
-    );
-    const cached = result.rows[0];
-    const snapshot = cached.snapshot as Catalog | null;
-    const age = snapshot
-      ? Date.now() - new Date(snapshot.fetchedAt).getTime()
-      : Infinity;
-    const sinceAttempt = cached.attempted_at
-      ? Date.now() - new Date(cached.attempted_at).getTime()
-      : Infinity;
-    if (
-      (snapshot && !force && age < 6 * 3600000) ||
-      sinceAttempt < 15 * 60000
-    ) {
-      await client.query("COMMIT");
-      if (!snapshot)
-        throw new Error(
-          "Projection source is unavailable. Try again after 15 minutes.",
-        );
-      return { ...snapshot, warning: cached.error ?? snapshot.warning };
-    }
-    try {
-      const catalog = await fetchEspn(season);
-      await client.query(
-        "UPDATE nba_draft.catalogs SET snapshot=$2, attempted_at=now(), error=NULL WHERE season=$1",
-        [season, JSON.stringify(catalog)],
-      );
-      await client.query("COMMIT");
-      return catalog;
-    } catch {
-      const warning =
-        "ESPN refresh failed. Cached projections remain unchanged. Try again after 15 minutes.";
-      await client.query(
-        "UPDATE nba_draft.catalogs SET attempted_at=now(), error=$2 WHERE season=$1",
-        [season, warning],
-      );
-      await client.query("COMMIT");
-      if (snapshot) return { ...snapshot, warning };
-      throw new Error(
-        "No cached player pool exists for this season. Try again after 15 minutes.",
-      );
-    }
+    const catalog = await readCatalog(client, season, force);
+    await client.query("COMMIT");
+    if (catalog instanceof Error) throw catalog;
+    return catalog;
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();
+  }
+}
+
+async function readCatalog(
+  client: PoolClient,
+  season: number,
+  force: boolean,
+): Promise<Catalog | Error> {
+  await client.query(
+    "INSERT INTO nba_draft.catalogs(season) VALUES($1) ON CONFLICT DO NOTHING",
+    [season],
+  );
+  const result = await client.query(
+    "SELECT * FROM nba_draft.catalogs WHERE season=$1 FOR UPDATE",
+    [season],
+  );
+  const cached = result.rows[0];
+  const snapshot = cached.snapshot as Catalog | null;
+  const age = snapshot
+    ? Date.now() - new Date(snapshot.fetchedAt).getTime()
+    : Infinity;
+  const sinceAttempt = cached.attempted_at
+    ? Date.now() - new Date(cached.attempted_at).getTime()
+    : Infinity;
+  if ((snapshot && !force && age < 6 * 3600000) || sinceAttempt < 15 * 60000) {
+    if (!snapshot)
+      return new Error(
+        "Projection source is unavailable. Try again after 15 minutes.",
+      );
+    return { ...snapshot, warning: cached.error ?? snapshot.warning };
+  }
+  try {
+    const catalog = await fetchEspn(season);
+    await client.query(
+      "UPDATE nba_draft.catalogs SET snapshot=$2, attempted_at=now(), error=NULL WHERE season=$1",
+      [season, JSON.stringify(catalog)],
+    );
+    return catalog;
+  } catch {
+    const warning =
+      "ESPN refresh failed. Cached projections remain unchanged. Try again after 15 minutes.";
+    await client.query(
+      "UPDATE nba_draft.catalogs SET attempted_at=now(), error=$2 WHERE season=$1",
+      [season, warning],
+    );
+    if (snapshot) return { ...snapshot, warning };
+    return new Error(
+      "No cached player pool exists for this season. Try again after 15 minutes.",
+    );
   }
 }

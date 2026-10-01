@@ -36,6 +36,7 @@ export const actionSchema = zod.discriminatedUnion("type", [
     type: zod.literal("claim"),
     slot: zod.number().int().min(0).max(19),
     name: label,
+    retryCredential: zod.string().regex(/^[a-f0-9]{64}$/),
   }),
   zod.object({
     ...base,
@@ -43,9 +44,17 @@ export const actionSchema = zod.discriminatedUnion("type", [
     code: zod.string().min(20).max(100),
   }),
   zod.object({ ...base, type: zod.literal("ready"), ready: zod.boolean() }),
-  zod.object({ ...base, type: zod.literal("settings"), settings: settingsSchema }),
+  zod.object({
+    ...base,
+    type: zod.literal("settings"),
+    settings: settingsSchema,
+  }),
   zod.object({ ...base, type: zod.literal("refresh") }),
-  zod.object({ ...base, type: zod.literal("start"), acknowledge: zod.boolean() }),
+  zod.object({
+    ...base,
+    type: zod.literal("start"),
+    acknowledge: zod.boolean(),
+  }),
   zod.object({
     ...base,
     type: zod.literal("pick"),
@@ -64,9 +73,18 @@ export const actionSchema = zod.discriminatedUnion("type", [
     ...base,
     type: zod.literal("undo"),
     expectedIndex: zod.number().int().min(1),
+    expectedPlayerId: zod.number().int().positive(),
+    expectedVersion: zod.number().int().positive(),
   }),
 ]);
 type Action = zod.infer<typeof actionSchema>;
+function claimSecrets(id: string, action: Extract<Action, { type: "claim" }>) {
+  const key = `${id}:${action.requestId}:${action.retryCredential}`;
+  return {
+    token: hash(`claim-session:${key}`),
+    recoveryCode: hash(`claim-recovery:${key}`),
+  };
+}
 export const createSchema = zod.object({
   name: label,
   commissioner: label,
@@ -284,7 +302,12 @@ export async function transactRoom(
           "SELECT actor,payload_hash FROM nba_draft.requests WHERE room_id=$1 AND request_id=$2",
           [id, action.requestId],
         );
-        const actor = token ? hash(token) : "invite";
+        const actor =
+          action.type === "claim"
+            ? `claim:${hash(action.retryCredential)}`
+            : token
+              ? hash(token)
+              : "invite";
         const payloadHash = hash(JSON.stringify(action));
         if (receipt.rows.length) {
           if (
@@ -292,6 +315,18 @@ export async function transactRoom(
             receipt.rows[0].payload_hash !== payloadHash
           )
             throw new DraftError("Request key belongs to a different action.");
+          if (action.type === "claim") {
+            const secrets = claimSecrets(id, action);
+            if (actorFor(room, secrets.token)) {
+              issuedToken = secrets.token;
+              recoveryCode = secrets.recoveryCode;
+            } else if (!member) {
+              throw new DraftError(
+                "Claim retry no longer restores this session. Use your recovery code.",
+                403,
+              );
+            }
+          }
         } else {
           if (action.type === "claim") {
             requireLobby(room);
@@ -305,8 +340,9 @@ export async function transactRoom(
             if (member?.slot !== null && member?.slot !== undefined)
               throw new DraftError("You already own a team.");
             if (!member) {
-              issuedToken = secret();
-              recoveryCode = secret();
+              const secrets = claimSecrets(id, action);
+              issuedToken = secrets.token;
+              recoveryCode = secrets.recoveryCode;
               member = {
                 name: action.name,
                 slot: action.slot,
@@ -370,7 +406,11 @@ export async function transactRoom(
               )
                 throw new DraftError("Team count would remove a claimed slot.");
               if (action.settings.season !== room.catalog.season)
-                room.catalog = await getCatalog(action.settings.season);
+                room.catalog = await getCatalog(
+                  action.settings.season,
+                  false,
+                  client,
+                );
               room.settings = action.settings;
               room.members.forEach((candidate) => {
                 candidate.ready = false;
@@ -382,7 +422,11 @@ export async function transactRoom(
             if (action.type === "refresh") {
               requireCommissioner(member);
               requireLobby(room);
-              room.catalog = await getCatalog(room.settings.season, true);
+              room.catalog = await getCatalog(
+                room.settings.season,
+                true,
+                client,
+              );
             }
             if (action.type === "start") {
               requireCommissioner(member);
@@ -507,7 +551,9 @@ export async function transactRoom(
               requireCommissioner(member);
               if (
                 !room.picks.length ||
-                action.expectedIndex !== room.picks.length
+                action.expectedIndex !== room.picks.length ||
+                action.expectedPlayerId !== room.picks.at(-1)?.playerId ||
+                action.expectedVersion !== room.version
               )
                 throw new DraftError("Latest pick changed. Review it again.");
               room.picks.pop();
@@ -523,7 +569,7 @@ export async function transactRoom(
             }
           }
           room.version++;
-          if (!issuedToken)
+          if (!issuedToken || action.type === "claim")
             await client.query(
               "INSERT INTO nba_draft.requests(room_id,request_id,actor,payload_hash) VALUES($1,$2,$3,$4)",
               [id, action.requestId, actor, payloadHash],
@@ -560,8 +606,9 @@ export async function transactRoom(
 export function rosterFor(room: Room, slot: number) {
   const players = room.picks
     .filter((pick) => pick.slot === slot)
-    .map((pick) =>
-      room.catalog.players.find((player) => player.id === pick.playerId)!,
+    .map(
+      (pick) =>
+        room.catalog.players.find((player) => player.id === pick.playerId)!,
     );
   return matchRoster(players, rosterSlots(room.settings));
 }

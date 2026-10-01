@@ -1,6 +1,6 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { database } from "../lib/db";
 import { createRoom, roomView, transactRoom } from "../lib/engine";
 import { getCatalog } from "../lib/espn";
@@ -17,9 +17,14 @@ const settings: Settings = {
 };
 const ids: string[] = [];
 const command = (type: string, extra: Record<string, unknown> = {}) =>
-  ({ type, ...extra, requestId: randomUUID() }) as Parameters<
-    typeof transactRoom
-  >[2];
+  ({
+    type,
+    ...(type === "claim"
+      ? { retryCredential: randomBytes(32).toString("hex") }
+      : {}),
+    ...extra,
+    requestId: randomUUID(),
+  }) as Parameters<typeof transactRoom>[2];
 async function makeRoom(custom = settings) {
   const created = await createRoom(
     `t_d4c47e94 Postgres acceptance ${randomUUID().slice(0, 8)}`,
@@ -191,7 +196,7 @@ test("pause/resume preserves time; commissioner pick, undo, persistence and expo
   const candidate = resumed.room.catalog.players.find((player) =>
     eligible(resumed.room, 0, player),
   )!;
-  await transactRoom(
+  const picked = await transactRoom(
     room.id,
     token,
     command("pick", {
@@ -203,7 +208,11 @@ test("pause/resume preserves time; commissioner pick, undo, persistence and expo
   const undone = await transactRoom(
     room.id,
     token,
-    command("undo", { expectedIndex: 1 }),
+    command("undo", {
+      expectedIndex: 1,
+      expectedPlayerId: candidate.id,
+      expectedVersion: picked.view.version,
+    }),
   );
   assert.equal(undone.room.phase, "paused");
   assert.equal(undone.room.remaining, 30000);
@@ -296,7 +305,9 @@ test("queue skips ineligible players; matching uses real ESPN eligibility", asyn
     ...first.room.catalog.players
       .filter((player) => eligible(first.room, 1, player))
       .map((player) =>
-        player.totals.PTS !== null && player.totals.GP !== null && player.totals.GP > 0
+        player.totals.PTS !== null &&
+        player.totals.GP !== null &&
+        player.totals.GP > 0
           ? player.totals.PTS / player.totals.GP
           : -Infinity,
       ),
@@ -311,7 +322,10 @@ test("queue skips ineligible players; matching uses real ESPN eligibility", asyn
   const automaticPlayer = next.room.catalog.players.find(
     (player) => player.id === next.room.picks[1].playerId,
   )!;
-  assert.equal(automaticPlayer.totals.PTS! / automaticPlayer.totals.GP!, bestRemainingRate);
+  assert.equal(
+    automaticPlayer.totals.PTS! / automaticPlayer.totals.GP!,
+    bestRemainingRate,
+  );
   assert.ok(
     eligible(
       next.room,
@@ -415,4 +429,152 @@ test("largest supported room catches up 600 expired picks within a serverless re
       picks: 600,
     }),
   );
+});
+
+test("a completely lost anonymous claim response can be replayed only with its private credential", async () => {
+  const { room } = await makeRoom();
+  const claim = command("claim", { slot: 0, name: "Lost response" })!;
+  await transactRoom(room.id, undefined, claim); // Discard both issued secrets.
+  const replay = await transactRoom(room.id, undefined, claim);
+  assert.equal(replay.view.me?.slot, 0);
+  assert.ok(replay.token);
+  assert.ok(replay.recoveryCode);
+  const cookieReplay = await transactRoom(room.id, replay.token, claim);
+  assert.equal(cookieReplay.token, replay.token);
+  assert.equal(cookieReplay.recoveryCode, replay.recoveryCode);
+  await assert.rejects(
+    transactRoom(room.id, undefined, {
+      ...claim,
+      retryCredential: randomBytes(32).toString("hex"),
+    } as Parameters<typeof transactRoom>[2]),
+    /different action/,
+  );
+  await assert.rejects(
+    transactRoom(room.id, undefined, {
+      ...claim,
+      slot: 1,
+    } as Parameters<typeof transactRoom>[2]),
+    /different action/,
+  );
+  const anonymous = await transactRoom(room.id);
+  assert.equal(anonymous.view.me, null);
+  assert.equal(
+    anonymous.room.members.filter((member) => member.slot === 0).length,
+    1,
+  );
+  const persisted = (
+    await database().query(
+      "SELECT data::text AS room, (SELECT jsonb_agg(r)::text FROM nba_draft.requests r WHERE room_id=$1) AS receipts FROM nba_draft.rooms WHERE id=$1",
+      [room.id],
+    )
+  ).rows[0];
+  assert.equal(claim.type, "claim");
+  if (claim.type !== "claim") throw new Error("Expected claim request");
+  for (const secret of [
+    replay.token!,
+    replay.recoveryCode!,
+    claim.retryCredential,
+  ]) {
+    assert.equal(persisted.room.includes(secret), false);
+    assert.equal(persisted.receipts.includes(secret), false);
+    assert.equal(JSON.stringify(anonymous.view).includes(secret), false);
+  }
+  const recovered = await transactRoom(
+    room.id,
+    undefined,
+    command("recover", { code: replay.recoveryCode }),
+  );
+  assert.equal(recovered.view.me?.slot, 0);
+});
+
+test("undo rejects a replacement at the same count, including the same player drafted again", async () => {
+  const { room, token } = await readyRoom({ ...settings, seconds: 600 });
+  const [first, replacement] = room.catalog.players.filter((player) =>
+    player.positions.includes("UTIL"),
+  );
+  const picked = await transactRoom(
+    room.id,
+    token,
+    command("pick", { playerId: first.id, expectedIndex: 0 }),
+  );
+  const preview = command("undo", {
+    expectedIndex: 1,
+    expectedPlayerId: first.id,
+    expectedVersion: picked.view.version,
+  });
+  await transactRoom(room.id, token, preview);
+  await transactRoom(room.id, token, command("resume"));
+  let latest = await transactRoom(
+    room.id,
+    token,
+    command("pick", { playerId: replacement.id, expectedIndex: 0 }),
+  );
+  await assert.rejects(
+    transactRoom(room.id, token, { ...preview!, requestId: randomUUID() }),
+    /Latest pick changed/,
+  );
+  assert.equal(
+    (await transactRoom(room.id, token)).room.picks[0].playerId,
+    replacement.id,
+  );
+  await transactRoom(
+    room.id,
+    token,
+    command("undo", {
+      expectedIndex: 1,
+      expectedPlayerId: replacement.id,
+      expectedVersion: latest.view.version,
+    }),
+  );
+  await transactRoom(room.id, token, command("resume"));
+  latest = await transactRoom(
+    room.id,
+    token,
+    command("pick", { playerId: first.id, expectedIndex: 0 }),
+  );
+  await assert.rejects(
+    transactRoom(room.id, token, { ...preview!, requestId: randomUUID() }),
+    /Latest pick changed/,
+  );
+  assert.equal(
+    (
+      await database().query(
+        "SELECT player_id::int AS id FROM nba_draft.picks WHERE room_id=$1",
+        [room.id],
+      )
+    ).rows[0].id,
+    first.id,
+  );
+  const undone = await transactRoom(
+    room.id,
+    token,
+    command("undo", {
+      expectedIndex: 1,
+      expectedPlayerId: first.id,
+      expectedVersion: latest.view.version,
+    }),
+  );
+  assert.equal(undone.room.picks.length, 0);
+});
+
+test("refresh and season changes share their room transaction connection under concurrent reads", async () => {
+  await getCatalog(2026);
+  for (const action of [
+    command("refresh"),
+    command("settings", { settings: { ...settings, season: 2026 } }),
+  ]) {
+    const { room, token } = await makeRoom();
+    const started = performance.now();
+    const results = await Promise.all([
+      transactRoom(room.id, token, action),
+      transactRoom(room.id, token),
+      transactRoom(room.id, token),
+    ]);
+    assert.ok(performance.now() - started < 10000);
+    assert.equal(
+      results[0].room.catalog.season,
+      action?.type === "settings" ? 2026 : 2027,
+    );
+    results.forEach((result) => assert.equal(result.room.phase, "lobby"));
+  }
 });
