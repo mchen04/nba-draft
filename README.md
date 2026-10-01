@@ -30,14 +30,14 @@ TLS verifies the database certificate.
 Create a room, choose rules, and share its room address.
 New rooms start with ESPN's H2H Points defaults, except the draft format.
 
-| Setting | Default | Source |
-| --- | --- | --- |
-| Teams | 10 | ESPN |
-| Pick clock | 90 seconds | ESPN |
-| Roster | PG, SG, SF, PF, C, G, F, 3 UTIL, 3 BN (13 rounds) | ESPN |
-| Scoring | PTS 1, 3PM 1, FGA −1, FGM 2, FTA −1, FTM 1, REB 1, AST 2, STL 4, BLK 4, TOV −2 | ESPN |
-| Format | Third-round reversal (3RR) | This app. ESPN defaults to snake. |
-| Timeout pick | Highest FP per game | This app |
+| Setting      | Default                                                                        | Source                            |
+| ------------ | ------------------------------------------------------------------------------ | --------------------------------- |
+| Teams        | 10                                                                             | ESPN                              |
+| Pick clock   | 90 seconds                                                                     | ESPN                              |
+| Roster       | PG, SG, SF, PF, C, G, F, 3 UTIL, 3 BN (13 rounds)                              | ESPN                              |
+| Scoring      | PTS 1, 3PM 1, FGA −1, FGM 2, FTA −1, FTM 1, REB 1, AST 2, STL 4, BLK 4, TOV −2 | ESPN                              |
+| Format       | Third-round reversal (3RR)                                                     | This app. ESPN defaults to snake. |
+| Timeout pick | Highest FP per game                                                            | This app                          |
 
 ESPN also adds one IR slot. IR is not a draft round, so the app omits it.
 Sources, read 2026-10-01:
