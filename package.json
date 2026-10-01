@@ -1,0 +1,31 @@
+{
+  "name": "nba-draft",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "check": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "test:db": "tsx --test --test-concurrency=1 tests/postgres.integration.ts",
+    "db:inspect": "tsx scripts/database.ts inspect",
+    "db:migrate": "tsx scripts/database.ts migrate"
+  },
+  "dependencies": {
+    "decimal.js": "^10.6.0",
+    "next": "16.3.8",
+    "pg": "8.23.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.15.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tsx": "4.23.15",
+    "typescript": "^5.9.0"
+  }
+}
