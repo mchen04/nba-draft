@@ -82,8 +82,9 @@ async function main() {
     );
     cli(first, ["scrollintoview", ".data-footer"]);
     shot(first, "cache-outage-desktop");
-    cli(first, ["set", "viewport", "320", "568"]);
+    cli(first, ["set", "viewport", "390", "844"]);
     cli(first, ["scrollintoview", ".data-footer"]);
+    evaluate(first, "window.scrollTo(0, document.documentElement.scrollHeight); return true;");
     shot(first, "cache-outage-phone");
     cli(first, ["set", "viewport", "1440", "1000"]);
     fill(first, "Manager name", "Controls A");
@@ -133,6 +134,7 @@ async function main() {
         () => snapshot(first).includes("Retry saved request"),
         "network failure offers idempotent retry",
       );
+      cli(first, ["scrollintoview", "div.banner.error"]);
       shot(first, "retry-desktop");
     } finally {
       await blocked.query("ROLLBACK");
@@ -176,7 +178,7 @@ async function main() {
       );
       waitedMilliseconds = Date.now() - stalledAt;
       assert.ok(waitedMilliseconds >= 29000 && waitedMilliseconds < 45000);
-      cli(second, ["scrollintoview", ".banner.error"]);
+      cli(second, ["scrollintoview", "div.banner.error"]);
       shot(second, "retry-phone");
     } finally {
       await stalled.query("ROLLBACK");

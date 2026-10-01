@@ -377,7 +377,18 @@ async function main() {
     shot(second, "live-phone");
     usableList(second);
     click(second, "Select Giannis Antetokounmpo");
-    cli(second, ["scroll", "up", "1000", "--selector", ".table-scroll"]);
+    const selectedScroll = evaluate(
+      second,
+      "return document.querySelector('.table-scroll').scrollTop;",
+    );
+    if (selectedScroll > 0)
+      cli(second, [
+        "scroll",
+        "up",
+        String(selectedScroll),
+        "--selector",
+        ".table-scroll",
+      ]);
     shot(second, "selected-phone");
     usableList(second);
     overflow(second);

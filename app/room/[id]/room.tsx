@@ -210,14 +210,12 @@ export default function DraftRoom({ id }: { id: string }) {
     ))
       observer.observe(element);
     window.addEventListener("resize", layout);
-    window.addEventListener("scroll", fitLists, { passive: true });
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
       window.removeEventListener("resize", layout);
-      window.removeEventListener("scroll", fitLists);
     };
-  }, [tab, room?.phase, catalog]);
+  }, [tab, room?.phase, room?.me?.slot, catalog, search, selectedId]);
   async function send(
     command: Command,
     label = "Action saved",
