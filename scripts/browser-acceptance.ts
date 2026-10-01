@@ -59,9 +59,15 @@ function fill(
   role = "textbox",
   privateResult = false,
 ) {
-  if (input === "") {
-    click(session, "Clear search");
-    return;
+  if (name === "Search players") {
+    if (cli(session, ["get", "value", element(session, "searchbox", name)]).value)
+      click(session, "Clear search");
+    assert.equal(
+      cli(session, ["get", "value", element(session, "searchbox", name)]).value,
+      "",
+      "Search clears through the app before replacement",
+    );
+    if (input === "") return;
   }
   cli(
     session,
@@ -72,6 +78,12 @@ function fill(
     ],
     privateResult,
   );
+  if (name === "Search players")
+    assert.equal(
+      cli(session, ["get", "value", element(session, "searchbox", name)]).value,
+      input,
+      "Search contains the exact requested text",
+    );
 }
 function select(session: string, name: string, input: string) {
   cli(session, ["select", element(session, "combobox", name), input]);
@@ -156,7 +168,16 @@ function usableList(session: string) {
 async function searchPlayer(session: string, name: string) {
   click(session, "Players");
   fill(session, "Search players", name);
-  await waitFor(() => snapshot(session).includes(`Select ${name}`), name);
+  await waitFor(
+    () =>
+      Object.values(
+        cli(session, ["snapshot", "-i"]).refs as Record<
+          string,
+          { role: string; name: string }
+        >,
+      ).some((item) => item.role === "button" && item.name === `Select ${name}`),
+    name,
+  );
   click(session, `Select ${name}`);
 }
 async function draft(
