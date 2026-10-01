@@ -38,19 +38,16 @@ export default function Home() {
     }
   }
   return (
-    <>
-      <header className="site-header">
-        <strong>NBA Draft Room</strong>
-        <span>Standalone fantasy basketball</span>
+    <form className="shell create" onSubmit={create}>
+      <header className="topbar">
+        <div className="title">
+          <h1>NBA Draft Room</h1>
+          <small>Live draft · ESPN projections · CSV export</small>
+        </div>
       </header>
-      <main className="setup-page">
-        <h1>Create your draft</h1>
-        <p>
-          Set your league rules, share the room, and draft together. Export the
-          results for manual ESPN entry.
-        </p>
-        <form className="panel setup-form" onSubmit={create}>
-          <div className="settings-grid">
+      <main className="panel">
+        <div className="scroll">
+          <div className="grid">
             <label>
               Room name
               <input
@@ -58,39 +55,37 @@ export default function Home() {
                 maxLength={60}
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="Your league draft"
+                placeholder="League draft"
               />
             </label>
             <label>
-              Commissioner name
+              Your name
               <input
                 required
                 maxLength={60}
                 value={commissioner}
                 onChange={(event) => setCommissioner(event.target.value)}
-                placeholder="Your name"
+                placeholder="Commissioner"
               />
             </label>
           </div>
           <SettingsEditor settings={settings} onChange={setSettings} />
-          {error && (
-            <p role="alert" className="error">
-              {error}
-            </p>
-          )}
-          <button className="primary" disabled={busy}>
-            {busy ? "Loading ESPN player pool…" : "Create draft room"}
-          </button>
           <p className="hint">
-            Fresh-player draft only. No keepers, trades, ESPN login, roster
-            import, or ESPN changes. All picks save to Postgres.
+            Not affiliated with ESPN. No ESPN login, roster import, or ESPN
+            changes. Rooms expire after 7 days without manager activity.
           </p>
-        </form>
-        <p className="hint">
-          Independent app. Not affiliated with ESPN. Projection source: ESPN’s
-          unofficial read-only endpoint.
-        </p>
+        </div>
       </main>
-    </>
+      {error && (
+        <p role="alert" className="alert error">
+          {error}
+        </p>
+      )}
+      <footer className="actionbar">
+        <button className="primary draft-button" disabled={busy}>
+          {busy ? "Loading ESPN players…" : "Create room"}
+        </button>
+      </footer>
+    </form>
   );
 }

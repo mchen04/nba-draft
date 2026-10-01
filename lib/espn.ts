@@ -1,6 +1,6 @@
 import { z as zod } from "zod";
 import { Catalog, Player, Slot, Stat, statIds } from "./model";
-import { database } from "./db";
+import { begin } from "./db";
 import { PoolClient } from "pg";
 
 const teamNames = [
@@ -69,6 +69,34 @@ const responseSchema = zod.object({
   players: zod.array(zod.object({ player: sourcePlayer })).min(1),
 });
 
+// ESPN omits zero-valued stats from a projection line. Restore those zeros only when
+// the line's shooting and scoring totals reconcile with them; otherwise keep gaps missing.
+export function sparse(stats: Record<string, number>): Record<string, number> {
+  const games = stats[statIds.GP];
+  if (!(games > 0)) return stats;
+  const filled: Record<string, number> = { ...stats };
+  for (const [key, id] of Object.entries(statIds))
+    if (!key.endsWith("%") && filled[id] === undefined) filled[id] = 0;
+  const stat = (key: Stat) => filled[statIds[key]];
+  const reconciles =
+    Math.abs(stat("PTS") - (2 * stat("FGM") + stat("3PM") + stat("FTM"))) <=
+      1 &&
+    (
+      [
+        ["FGA", "FGM", "FGMISS"],
+        ["FTA", "FTM", "FTMISS"],
+        ["3PA", "3PM", "3PMISS"],
+      ] as Stat[][]
+    ).every(
+      ([attempted, made, missed]) =>
+        Math.abs(stat(attempted) - stat(made) - stat(missed)) < 1,
+    );
+  return reconciles ? filled : stats;
+}
+
+// Bump when normalization changes so cached snapshots refresh from ESPN.
+export const mappingVersion = 2;
+
 export function normalizeCatalog(
   body: unknown,
   season: number,
@@ -92,7 +120,8 @@ export function normalizeCatalog(
           line.statSplitTypeId === 0 &&
           line.scoringPeriodId === 0,
       ) ?? [];
-    const projection = projections.length === 1 ? projections[0].stats : {};
+    const projection =
+      projections.length === 1 ? sparse(projections[0].stats) : {};
     const totals = Object.fromEntries(
       Object.entries(statIds).map(([key, id]) => {
         const input = projection[id];
@@ -153,6 +182,7 @@ export function normalizeCatalog(
   if (!players.length) throw new Error("No recognized eligible players.");
   return {
     season,
+    mapping: mappingVersion,
     fetchedAt,
     players,
     projectedCount: players.filter((player) => player.projected).length,
@@ -210,9 +240,8 @@ export async function getCatalog(
     if (catalog instanceof Error) throw catalog;
     return catalog;
   }
-  const client = await database().connect();
+  const client = await begin();
   try {
-    await client.query("BEGIN");
     const catalog = await readCatalog(client, season, force);
     await client.query("COMMIT");
     if (catalog instanceof Error) throw catalog;
@@ -246,7 +275,11 @@ async function readCatalog(
   const sinceAttempt = cached.attempted_at
     ? Date.now() - new Date(cached.attempted_at).getTime()
     : Infinity;
-  if ((snapshot && !force && age < 6 * 3600000) || sinceAttempt < 15 * 60000) {
+  const current = snapshot?.mapping === mappingVersion;
+  if (
+    (snapshot && current && !force && age < 6 * 3600000) ||
+    sinceAttempt < 15 * 60000
+  ) {
     if (!snapshot)
       return new Error(
         "Projection source is unavailable. Try again after 15 minutes.",

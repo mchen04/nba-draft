@@ -2,7 +2,14 @@ import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { database } from "../lib/db";
-import { createRoom, roomView, transactRoom } from "../lib/engine";
+import {
+  commissionerIdleLimit,
+  createRoom,
+  expireRooms,
+  inactiveLimit,
+  roomView,
+  transactRoom,
+} from "../lib/engine";
 import { getCatalog } from "../lib/espn";
 import { exportCsv } from "../lib/export";
 import { Settings, defaultSettings } from "../lib/model";
@@ -27,7 +34,7 @@ const command = (type: string, extra: Record<string, unknown> = {}) =>
   }) as Parameters<typeof transactRoom>[2];
 async function makeRoom(custom = settings) {
   const created = await createRoom(
-    `t_d4c47e94 Postgres acceptance ${randomUUID().slice(0, 8)}`,
+    `t_167eb983 Postgres acceptance ${randomUUID().slice(0, 8)}`,
     "Commissioner",
     custom,
   );
@@ -56,15 +63,11 @@ async function readyRoom(custom = settings) {
     second.token,
     command("ready", { ready: true }),
   );
-  await transactRoom(
-    created.room.id,
-    created.token,
-    command("start", { acknowledge: true }),
-  );
+  await transactRoom(created.room.id, created.token, command("start"));
   return { ...created, secondToken: second.token! };
 }
 after(async () => {
-  console.log(JSON.stringify({ task: "t_d4c47e94", evidenceRooms: ids }));
+  console.log(JSON.stringify({ task: "t_167eb983", evidenceRooms: ids }));
   await database().end();
 });
 
@@ -339,14 +342,18 @@ test("queue skips ineligible players; matching uses real ESPN eligibility", asyn
   );
   assert.equal(rosterSlots(custom).length, 2);
 });
+// Season 2025 is outside the app's season choices, so live rooms never share this cache row.
+const OUTAGE_SEASON = 2025;
 test("cache outage preserves real source values; frozen room cannot refresh", async () => {
-  const catalog = await getCatalog(2027);
+  const catalog = await getCatalog(OUTAGE_SEASON);
   const original = await database().query(
-    "SELECT attempted_at,error FROM nba_draft.catalogs WHERE season=2027",
+    "SELECT attempted_at,error FROM nba_draft.catalogs WHERE season=$1",
+    [OUTAGE_SEASON],
   );
   try {
     await database().query(
-      "UPDATE nba_draft.catalogs SET attempted_at=NULL WHERE season=2027",
+      "UPDATE nba_draft.catalogs SET attempted_at=NULL WHERE season=$1",
+      [OUTAGE_SEASON],
     );
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => {
@@ -354,7 +361,7 @@ test("cache outage preserves real source values; frozen room cannot refresh", as
     };
     let cached;
     try {
-      cached = await getCatalog(2027, true);
+      cached = await getCatalog(OUTAGE_SEASON, true);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -365,8 +372,8 @@ test("cache outage preserves real source values; frozen room cannot refresh", as
     await assert.rejects(transactRoom(room.id, token, command("refresh")));
   } finally {
     await database().query(
-      "UPDATE nba_draft.catalogs SET attempted_at=$1,error=$2 WHERE season=2027",
-      [original.rows[0].attempted_at, original.rows[0].error],
+      "UPDATE nba_draft.catalogs SET attempted_at=$1,error=$2 WHERE season=$3",
+      [original.rows[0].attempted_at, original.rows[0].error, OUTAGE_SEASON],
     );
   }
 });
@@ -398,7 +405,7 @@ test("largest supported room catches up 600 expired picks within a serverless re
       command("ready", { ready: true }),
     );
   }
-  await transactRoom(room.id, token, command("start", { acknowledge: true }));
+  await transactRoom(room.id, token, command("start"));
   await database().query(
     "UPDATE nba_draft.rooms SET data=jsonb_set(data,'{deadline}',to_jsonb((extract(epoch FROM clock_timestamp())*1000-4000000)::bigint)) WHERE id=$1",
     [room.id],
@@ -577,4 +584,197 @@ test("refresh and season changes share their room transaction connection under c
     );
     results.forEach((result) => assert.equal(result.room.phase, "lobby"));
   }
+});
+
+test("leave, rejoin, switch, and commissioner departure keep one owner per team", async () => {
+  const { room, token, recoveryCode } = await makeRoom();
+  const commissioner = await transactRoom(
+    room.id,
+    token,
+    command("claim", { slot: 0, name: "Commish" }),
+  );
+  assert.equal(commissioner.view.me?.commissioner, true);
+  const b = await transactRoom(
+    room.id,
+    undefined,
+    command("claim", { slot: 1, name: "B" }),
+  );
+  await transactRoom(room.id, b.token, command("ready", { ready: true }));
+  // Switching teams before start releases the old slot and clears ready.
+  await transactRoom(room.id, b.token, command("leave"));
+  await assert.rejects(
+    transactRoom(room.id, b.token, command("ready", { ready: true })),
+  );
+  const rejoined = await transactRoom(
+    room.id,
+    undefined,
+    command("claim", { slot: 1, name: "B again" }),
+  );
+  assert.equal(rejoined.view.me?.commissioner, false);
+  const recovered = await transactRoom(
+    room.id,
+    undefined,
+    command("recover", { code: recoveryCode }),
+  );
+  assert.equal(recovered.view.me?.commissioner, true);
+  await transactRoom(room.id, token, command("ready", { ready: true }));
+  const switched = await transactRoom(
+    room.id,
+    rejoined.token,
+    command("claim", { slot: 0, name: "B" }),
+  ).catch((error) => error);
+  assert.match(String(switched.message), /already claimed/);
+  // Commissioner hands off, then the new commissioner leaves; the role passes on.
+  const handed = await transactRoom(
+    room.id,
+    token,
+    command("transfer", { slot: 1 }),
+  );
+  assert.equal(handed.view.me?.commissioner, false);
+  await assert.rejects(transactRoom(room.id, token, command("pause")));
+  const departed = await transactRoom(
+    room.id,
+    rejoined.token,
+    command("leave"),
+  );
+  assert.equal(departed.view.me, null);
+  const after = await transactRoom(room.id, token);
+  assert.equal(after.view.me?.commissioner, true);
+  assert.equal(
+    after.view.members.filter((member) => member.commissioner).length,
+    1,
+  );
+});
+
+test("a departed team keeps drafting by timeout and can be reclaimed mid-draft", async () => {
+  const { room, token, secondToken } = await readyRoom();
+  const left = await transactRoom(room.id, secondToken, command("leave"));
+  assert.equal(left.room.phase, "live");
+  assert.equal(
+    left.view.members.some((member) => member.slot === 1),
+    false,
+  );
+  await database().query(
+    "UPDATE nba_draft.rooms SET data=jsonb_set(data,'{deadline}',to_jsonb((extract(epoch FROM clock_timestamp())*1000-1000)::bigint)) WHERE id=$1",
+    [room.id],
+  );
+  const caught = await transactRoom(room.id, token);
+  assert.ok(caught.room.picks.length >= 1);
+  const reclaimed = await transactRoom(
+    room.id,
+    undefined,
+    command("claim", { slot: 1, name: "Returning B" }),
+  );
+  assert.equal(reclaimed.view.me?.slot, 1);
+  await assert.rejects(
+    transactRoom(
+      room.id,
+      reclaimed.token,
+      command("claim", { slot: 0, name: "X" }),
+    ),
+  );
+});
+
+test("only manager actions count as activity; polls and timeout picks do not", async () => {
+  const { room, token } = await readyRoom();
+  const started = await transactRoom(room.id, token);
+  const activeAt = started.room.activeAt!;
+  await database().query(
+    "UPDATE nba_draft.rooms SET data=jsonb_set(data,'{deadline}',to_jsonb((extract(epoch FROM clock_timestamp())*1000-1000)::bigint)) WHERE id=$1",
+    [room.id],
+  );
+  const polled = await transactRoom(room.id, token);
+  assert.ok(polled.room.picks.length >= 1, "timeout pick happened");
+  assert.equal(polled.room.activeAt, activeAt);
+  const paused = await transactRoom(room.id, token, command("pause"));
+  assert.ok(paused.room.activeAt! > activeAt);
+});
+
+test("scheduled expiry deletes only seven-day-inactive rooms and protects live drafts", async () => {
+  const old = (days: number) =>
+    `(extract(epoch FROM clock_timestamp())*1000 - ${days} * 86400000)::bigint`;
+  const age = (id: string, days: number) =>
+    database().query(
+      `UPDATE nba_draft.rooms SET data=jsonb_set(data,'{activeAt}',to_jsonb(${old(days)})), created_at=clock_timestamp() - interval '${days} days' WHERE id=$1`,
+      [id],
+    );
+  const lobby = await makeRoom();
+  await age(lobby.room.id, 8);
+  const finished = await readyRoom();
+  await database().query(
+    `UPDATE nba_draft.rooms SET data=jsonb_set(jsonb_set(data,'{activeAt}',to_jsonb(${old(9)})),'{deadline}',to_jsonb(${old(9)})) WHERE id=$1`,
+    [finished.room.id],
+  );
+  const live = await readyRoom();
+  await database().query(
+    `UPDATE nba_draft.rooms SET data=jsonb_set(jsonb_set(data,'{activeAt}',to_jsonb(${old(8)})),'{deadline}',to_jsonb((extract(epoch FROM clock_timestamp())*1000 + 3600000)::bigint)) WHERE id=$1`,
+    [live.room.id],
+  );
+  const recent = await makeRoom();
+  await age(recent.room.id, 6);
+  const candidates = await database().query(
+    `SELECT id, data->>'name' AS name FROM nba_draft.rooms WHERE COALESCE((data->>'activeAt')::bigint, (extract(epoch FROM created_at) * 1000)::bigint) < (extract(epoch FROM clock_timestamp()) * 1000)::bigint - $1`,
+    [inactiveLimit],
+  );
+  // Earlier runs of this task may leave protected rooms; anything else blocks the sweep.
+  const unrelated = candidates.rows.filter(
+    (row) => !String(row.name).startsWith("t_167eb983 "),
+  );
+  assert.equal(
+    unrelated.length,
+    0,
+    "Refusing to sweep: unrelated rooms are already expired.",
+  );
+  const dry = await expireRooms(true);
+  assert.ok(dry.candidates >= 3 && dry.expired >= 2 && dry.kept >= 1);
+  const exists = async (id: string) =>
+    (await database().query("SELECT 1 FROM nba_draft.rooms WHERE id=$1", [id]))
+      .rows.length === 1;
+  assert.equal(await exists(lobby.room.id), true, "dry run deletes nothing");
+  const swept = await expireRooms();
+  assert.deepEqual(swept, dry);
+  assert.equal(await exists(lobby.room.id), false);
+  assert.equal(await exists(finished.room.id), false);
+  assert.equal(await exists(live.room.id), true);
+  assert.equal(await exists(recent.room.id), true);
+  const orphans = await database().query(
+    "SELECT (SELECT count(*) FROM nba_draft.picks WHERE room_id=ANY($1))::int AS picks, (SELECT count(*) FROM nba_draft.requests WHERE room_id=ANY($1))::int AS requests",
+    [[lobby.room.id, finished.room.id]],
+  );
+  assert.deepEqual(orphans.rows[0], { picks: 0, requests: 0 });
+  console.log(
+    JSON.stringify({
+      expiry: swept,
+      expired: [lobby.room.id, finished.room.id],
+      kept: [live.room.id, recent.room.id],
+    }),
+  );
+});
+
+test("a manager can take over only after the commissioner is idle", async () => {
+  const { room, token, secondToken } = await readyRoom();
+  const blocked = await transactRoom(
+    room.id,
+    secondToken,
+    command("takeCommissioner"),
+  ).catch((error) => error);
+  assert.match(String(blocked.message), /commissioner is active/);
+  await database().query(
+    `UPDATE nba_draft.rooms SET data=jsonb_set(data,'{members,0,activeAt}',to_jsonb((extract(epoch FROM clock_timestamp())*1000 - $2)::bigint)) WHERE id=$1`,
+    [room.id, commissionerIdleLimit + 1000],
+  );
+  const idle = await transactRoom(room.id, secondToken);
+  assert.equal(idle.view.commissionerIdle, true);
+  const taken = await transactRoom(
+    room.id,
+    secondToken,
+    command("takeCommissioner"),
+  );
+  assert.equal(taken.view.me?.commissioner, true);
+  assert.equal(
+    taken.view.members.filter((member) => member.commissioner).length,
+    1,
+  );
+  await assert.rejects(transactRoom(room.id, token, command("pause")));
+  await transactRoom(room.id, secondToken, command("pause"));
 });

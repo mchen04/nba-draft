@@ -62,6 +62,7 @@ export type Player = {
 };
 export type Catalog = {
   season: number;
+  mapping?: number;
   fetchedAt: string;
   players: Player[];
   projectedCount: number;
@@ -132,17 +133,44 @@ export const settingsSchema = zod
       });
   });
 export type Settings = zod.infer<typeof settingsSchema>;
-export const defaultSettings: Settings = {
-  teamCount: 12,
-  order: Array.from({ length: 12 }, (_, index) => index),
-  format: "3rr",
-  seconds: 60,
+// ESPN H2H Points league defaults, read 2026-10-01 from ESPN's league-defaults
+// settings feed (leaguedefaults/2, season 2027) and ESPN's points-scoring article.
+// ESPN also adds one IR slot; IR is not a draft round, so the app omits it.
+export const espnPointsDefaults = {
+  teamCount: 10,
+  format: "snake",
+  seconds: 90,
   slots: { PG: 1, SG: 1, SF: 1, PF: 1, C: 1, G: 1, F: 1, UTIL: 3, BN: 3 },
-  scoring: "categories",
+  weights: {
+    PTS: 1,
+    "3PM": 1,
+    FGA: -1,
+    FGM: 2,
+    FTA: -1,
+    FTM: 1,
+    REB: 1,
+    AST: 2,
+    STL: 4,
+    BLK: 4,
+    TO: -2,
+  },
+} satisfies Partial<Settings>;
+// ESPN's season id is the year the season ends; its feed switched to 2027 before October 2026.
+export function currentSeason(date = new Date()) {
+  return date.getUTCFullYear() + (date.getUTCMonth() >= 6 ? 1 : 0);
+}
+// Every value is ESPN's points default except the draft format: 3RR is this app's default.
+export const defaultSettings: Settings = {
+  ...espnPointsDefaults,
+  order: Array.from(
+    { length: espnPointsDefaults.teamCount },
+    (_, index) => index,
+  ),
+  format: "3rr",
+  scoring: "points",
   categories: categoryStats.slice(0, 9),
-  weights: { PTS: 1, REB: 1.2, AST: 1.5, STL: 3, BLK: 3, TO: -1 },
-  fallback: "PTS",
-  season: 2027,
+  fallback: "FP",
+  season: currentSeason(),
 };
 export type Member = {
   name: string;
@@ -152,6 +180,7 @@ export type Member = {
   recovery: string;
   ready: boolean;
   queue: number[];
+  activeAt?: number;
 };
 export type Pick = {
   index: number;
@@ -174,9 +203,16 @@ export type Room = {
   ranking: number[];
   version: number;
   message: string | null;
+  activeAt?: number;
 };
 export type View = Omit<Room, "members" | "catalog" | "ranking"> & {
-  members: { name: string; slot: number | null; ready: boolean }[];
+  members: {
+    name: string;
+    slot: number | null;
+    ready: boolean;
+    commissioner: boolean;
+  }[];
+  commissionerIdle: boolean;
   me: { slot: number | null; commissioner: boolean; ready: boolean } | null;
   queue: number[];
   catalog: Omit<Catalog, "players">;
