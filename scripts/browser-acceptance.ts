@@ -41,6 +41,13 @@ const label: Record<string, string> = {
   [D]: "small",
   [E]: "laptop",
 };
+// Close this run's sessions on every exit path.
+process.on("exit", () => {
+  for (const session of [A, B, C, D, E])
+    try {
+      cli(session, ["close"]);
+    } catch {}
+});
 let roomUrl = "",
   roomId = "";
 const step = (session: string, screen: string) => {
@@ -83,13 +90,26 @@ function waitPicks(count: number, session = A, ms = 20000) {
 function draftTop(session: string, filter?: string) {
   tab(session, "Players");
   const before = state(session).picks.length;
+  // Read the list only after this page's poll shows the latest pick.
+  waitFor(session, `page shows pick ${before + 1}`, () =>
+    evaluate(
+      session,
+      `return !!document.querySelector('.pick-strip button.current')?.getAttribute('aria-label').startsWith('Pick ${before + 1},')`,
+    ),
+  );
   if (filter) fill(session, "Search players", filter, "searchbox");
   const names: string[] = evaluate(
     session,
     "return [...document.querySelectorAll('.player-table tbody tr:not(.taken) button.item')].slice(0, 25).map((b) => b.getAttribute('aria-label').replace(/^Select /, ''));",
   );
   for (const name of names) {
-    click(session, `Select ${name}`);
+    // A poll can remove a just-drafted row after the list was read; read it again.
+    try {
+      click(session, `Select ${name}`);
+    } catch {
+      sleep(2500);
+      return draftTop(session, filter);
+    }
     waitFor(
       session,
       `selected ${name}`,
@@ -455,4 +475,3 @@ console.log(
     commissionerCodeSaved: !!commissionerCode,
   }),
 );
-for (const session of [A, B, C, D, E]) cli(session, ["close"]);
