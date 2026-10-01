@@ -120,6 +120,39 @@ function overflow(session: string) {
   );
   return result;
 }
+function usableList(session: string) {
+  const bounds = evaluate(
+    session,
+    `
+    const listNode = document.querySelector('.table-scroll');
+    const list = listNode.getBoundingClientRect();
+    const heading = document.querySelector('.player-table thead').getBoundingClientRect();
+    const tray = document.querySelector('.selection-tray').getBoundingClientRect();
+    const summary = document.querySelector('.room-summary').getBoundingClientRect();
+    const top = Math.max(list.top + heading.height, summary.bottom);
+    const bottom = Math.min(list.top + listNode.clientHeight, tray.top);
+    const rows = [...document.querySelectorAll('.player-table tbody tr')].filter(row => {
+      const rect = row.getBoundingClientRect();
+      return rect.top >= top - 1 && rect.bottom <= bottom + 1;
+    });
+    return { width: innerWidth, height: innerHeight, listTop: list.top, listBottom: list.bottom,
+      trayTop: tray.top, fullRows: rows.length, rowCount: document.querySelectorAll('.player-table tbody tr').length };
+  `,
+  );
+  appendFileSync(
+    `${evidence}/list-bounds.jsonl`,
+    JSON.stringify(bounds) + "\n",
+  );
+  assert.ok(
+    bounds.listBottom <= bounds.trayTop + 1,
+    `List overlaps action bar: ${JSON.stringify(bounds)}`,
+  );
+  assert.ok(
+    bounds.fullRows >= Math.min(3, bounds.rowCount),
+    `Too few usable rows: ${JSON.stringify(bounds)}`,
+  );
+  return bounds;
+}
 async function searchPlayer(session: string, name: string) {
   click(session, "Players");
   fill(session, "Search players", name);
@@ -268,6 +301,7 @@ async function main() {
     click(first, "Players");
     fill(first, "Search players", "");
     shot(first, "live-desktop");
+    usableList(first);
     overflow(first);
     select(first, "Position", "PG");
     select(
@@ -332,13 +366,20 @@ async function main() {
       ),
       "Nikola Jokic",
     );
+    fill(first, "Search players", "");
     cli(first, ["set", "viewport", "900", "800"]);
     shot(first, "live-intermediate");
+    usableList(first);
     overflow(first);
     cli(first, ["set", "viewport", "1440", "1000"]);
     click(second, "Players");
     fill(second, "Search players", "");
     shot(second, "live-phone");
+    usableList(second);
+    click(second, "Select Giannis Antetokounmpo");
+    cli(second, ["scroll", "up", "1000", "--selector", ".table-scroll"]);
+    shot(second, "selected-phone");
+    usableList(second);
     overflow(second);
     click(second, /Queue \(/);
     shot(second, "queue-phone");
@@ -371,6 +412,9 @@ async function main() {
         ) === 1,
       "cross device recovery",
     );
+    click(recovered, "Players");
+    shot(recovered, "live-phone-wide");
+    usableList(recovered);
     cli(second, ["reload"]);
     await waitFor(
       () => snapshot(second).includes("My needs"),
@@ -403,7 +447,10 @@ async function main() {
     click(first, "Board");
     click(first, "Players");
     assert.deepEqual(
-      evaluate(first, "return {top:document.querySelector('.table-scroll').scrollTop,left:document.querySelector('.table-scroll').scrollLeft};"),
+      evaluate(
+        first,
+        "return {top:document.querySelector('.table-scroll').scrollTop,left:document.querySelector('.table-scroll').scrollLeft};",
+      ),
       savedScroll,
     );
     fill(first, "Search players", "Giannis Antetokounmpo");
@@ -411,7 +458,10 @@ async function main() {
     click(first, "Roster");
     click(first, "Players");
     assert.equal(
-      evaluate(first, "return document.querySelector('input[type=search]').value;"),
+      evaluate(
+        first,
+        "return document.querySelector('input[type=search]').value;",
+      ),
       "Giannis Antetokounmpo",
     );
     assert.ok(snapshot(first).includes("Draft Giannis Antetokounmpo"));
@@ -426,6 +476,18 @@ async function main() {
         `${evidence}/${kind}.csv`,
       ]);
     }
+    evaluate(
+      first,
+      "window.scrollTo(0, document.documentElement.scrollHeight); return true;",
+    );
+    const footer = evaluate(
+      first,
+      "return {bottom:document.querySelector('.data-footer').getBoundingClientRect().bottom,tray:document.querySelector('.selection-tray').getBoundingClientRect().top};",
+    );
+    assert.ok(
+      footer.bottom <= footer.tray,
+      `Footer overlaps action bar: ${JSON.stringify(footer)}`,
+    );
     for (const session of sessions) {
       assert.deepEqual(cli(session, ["errors"]).errors ?? [], []);
       assert.deepEqual(cli(session, ["console"]).messages ?? [], []);
@@ -469,7 +531,18 @@ async function main() {
     );
   }
 }
-export { cli, click, fill, select, waitFor, evaluate, shot, snapshot, overflow };
+export {
+  cli,
+  click,
+  fill,
+  select,
+  waitFor,
+  evaluate,
+  shot,
+  snapshot,
+  overflow,
+  usableList,
+};
 if (process.argv[1]?.endsWith("browser-acceptance.ts"))
   main().catch((error) => {
     console.error(error.message);

@@ -53,6 +53,7 @@ Pause saves the remaining clock.
 Resume restores it.
 Enable “Pick for on-clock team” to draft for an absent manager.
 “Undo latest” previews the latest pick and requires confirmation.
+If another device changes the draft, review the latest pick again before undoing.
 Undo removes only that pick and pauses the room with a full clock.
 Review the roster before resuming.
 If no remaining player fits, the room pauses instead of breaking roster rules.
@@ -63,6 +64,9 @@ Undo can also reopen a completed room.
 Open the invite address, enter your name, and claim an open team.
 Your ownership cookie survives refresh and browser reconnect.
 Save your private recovery code after creation or claim.
+Before a claim, the browser saves a private retry credential in session storage.
+If the complete response disappears, retry restores ownership and the recovery code, even after reloading that tab.
+The database stores only credential hashes. Closing the tab before recovery discards its saved retry.
 Use “Recover your team on another device” to restore ownership and your queue.
 The commissioner code also restores commissioner controls.
 Anyone with a recovery code can control that owner; keep it private.
@@ -163,6 +167,7 @@ node --env-file=/private/path/neon.env --import tsx --test --test-concurrency=1 
 npm run build
 node --env-file=/private/path/neon.env node_modules/next/dist/bin/next start --port 3104
 node --import tsx scripts/browser-acceptance.ts http://localhost:3104 /outside/checkout/evidence
+node --import tsx scripts/edge-acceptance.ts http://localhost:3104 /outside/checkout/evidence
 node --import tsx scripts/http-acceptance.ts http://localhost:3104 /outside/checkout/evidence
 node --env-file=/private/path/neon.env --import tsx scripts/ui-extra-acceptance.ts http://localhost:3104 /outside/checkout/evidence
 node --import tsx scripts/offline-acceptance.ts prepare http://localhost:3104 /outside/checkout/evidence

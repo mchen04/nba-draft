@@ -160,14 +160,64 @@ export default function DraftRoom({ id }: { id: string }) {
       loadCatalog().catch((failure) => setError(failure.message));
   }, [room, catalog, loadCatalog]);
   useEffect(() => {
-    if (room?.phase !== "lobby" && window.innerWidth < 768) {
-      const workspace = document.querySelector(".workspace");
-      if (workspace)
+    if (!room || !catalog) return;
+    const app = document.querySelector<HTMLElement>(".draft-app")!;
+    const tray = document.querySelector<HTMLElement>(".selection-tray")!;
+    const workspace = document.querySelector<HTMLElement>(".workspace")!;
+    const fitLists = () => {
+      const nav = document.querySelector<HTMLElement>(".toolbar nav")!;
+      app.style.setProperty(
+        "--action-space",
+        `${tray.offsetHeight + (innerWidth < 768 ? nav.offsetHeight : 0) + 20}px`,
+      );
+      for (const list of document.querySelectorAll<HTMLElement>(
+        ".table-scroll, .board-scroll",
+      )) {
+        const top = list.getBoundingClientRect().top;
+        const stickyHeight =
+          document.querySelector<HTMLElement>(".draft-header")!.offsetHeight +
+          document.querySelector<HTMLElement>(".room-summary")!.offsetHeight;
+        if (list.getClientRects().length && top >= stickyHeight)
+          list.style.maxHeight = `${Math.max(200, tray.getBoundingClientRect().top - top - 4)}px`;
+      }
+    };
+    const layout = () => {
+      const list = document.querySelector<HTMLElement>(
+        tab === "Board" ? ".board-scroll" : ".table-scroll",
+      )!;
+      if (
+        room.phase !== "lobby" &&
+        (innerWidth < 1200 ||
+          tray.getBoundingClientRect().top - list.getBoundingClientRect().top <
+            260)
+      ) {
+        const header = document.querySelector<HTMLElement>(".draft-header")!;
+        const summary = document.querySelector<HTMLElement>(".room-summary")!;
         window.scrollTo({
-          top: window.scrollY + workspace.getBoundingClientRect().top - 140,
+          top:
+            scrollY +
+            workspace.getBoundingClientRect().top -
+            header.offsetHeight -
+            summary.offsetHeight,
         });
-    }
-  }, [tab, room?.phase]);
+      }
+      fitLists();
+    };
+    const frame = requestAnimationFrame(layout);
+    const observer = new ResizeObserver(fitLists);
+    for (const element of document.querySelectorAll(
+      ".selection-tray, .player-filters, .recovery-panel",
+    ))
+      observer.observe(element);
+    window.addEventListener("resize", layout);
+    window.addEventListener("scroll", fitLists, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener("resize", layout);
+      window.removeEventListener("scroll", fitLists);
+    };
+  }, [tab, room?.phase, catalog]);
   async function send(
     command: Command,
     label = "Action saved",
@@ -357,6 +407,66 @@ export default function DraftRoom({ id }: { id: string }) {
         <a href="/">Create a new room</a>
       </main>
     );
+  const recoveryPanels = (
+    <>
+      {!room.me && (
+        <details className="panel recovery-panel">
+          <summary>Recover your team on another device</summary>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              send({ type: "recover", code: recovery }, "Ownership restored");
+              setRecovery("");
+            }}
+          >
+            <label>
+              Recovery code
+              <input
+                autoComplete="off"
+                type="password"
+                value={recovery}
+                onChange={(event) => setRecovery(event.target.value)}
+                required
+              />
+            </label>
+            <button className="primary" disabled={busy || !connected}>
+              Recover team
+            </button>
+          </form>
+        </details>
+      )}
+      {recoveryCode && (
+        <details className="panel recovery-panel">
+          <summary>Save your private recovery code</summary>
+          <p>
+            This code restores your team and commissioner rights on another
+            device. Do not share it with other managers.
+          </p>
+          <code>{recoveryCode}</code>
+          <button
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(recoveryCode);
+                setNotice("Recovery code copied");
+              } catch {
+                setNotice("Select and copy your recovery code.");
+              }
+            }}
+          >
+            Copy recovery code
+          </button>
+          <button
+            onClick={() => {
+              sessionStorage.removeItem(`recovery_${id}`);
+              setRecoveryCode("");
+            }}
+          >
+            I saved it · hide
+          </button>
+        </details>
+      )}
+    </>
+  );
   const seconds =
     room.phase === "paused"
       ? (room.remaining ?? 0)
@@ -914,62 +1024,7 @@ export default function DraftRoom({ id }: { id: string }) {
           <button onClick={() => setSettingsOpen(false)}>Cancel</button>
         </section>
       )}
-      {!room.me && (
-        <details className="panel recovery-panel">
-          <summary>Recover your team on another device</summary>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              send({ type: "recover", code: recovery }, "Ownership restored");
-              setRecovery("");
-            }}
-          >
-            <label>
-              Recovery code
-              <input
-                autoComplete="off"
-                type="password"
-                value={recovery}
-                onChange={(event) => setRecovery(event.target.value)}
-                required
-              />
-            </label>
-            <button className="primary" disabled={busy || !connected}>
-              Recover team
-            </button>
-          </form>
-        </details>
-      )}
-      {recoveryCode && (
-        <details className="panel recovery-panel">
-          <summary>Save your private recovery code</summary>
-          <p>
-            This code restores your team and commissioner rights on another
-            device. Do not share it with other managers.
-          </p>
-          <code>{recoveryCode}</code>
-          <button
-            onClick={async () => {
-              try {
-                await navigator.clipboard.writeText(recoveryCode);
-                setNotice("Recovery code copied");
-              } catch {
-                setNotice("Select and copy your recovery code.");
-              }
-            }}
-          >
-            Copy recovery code
-          </button>
-          <button
-            onClick={() => {
-              sessionStorage.removeItem(`recovery_${id}`);
-              setRecoveryCode("");
-            }}
-          >
-            I saved it · hide
-          </button>
-        </details>
-      )}
+      {room.phase === "lobby" && recoveryPanels}
       {room.phase === "complete" && (
         <section className="panel completion">
           <h2>Draft complete</h2>
@@ -988,7 +1043,7 @@ export default function DraftRoom({ id }: { id: string }) {
           </div>
           <div className={`player-filters ${filtersOpen ? "expanded" : ""}`}>
             <label className="search-label">
-              Search players
+              <span className="search-caption">Search players</span>
               <input
                 type="search"
                 value={search}
@@ -1281,6 +1336,7 @@ export default function DraftRoom({ id }: { id: string }) {
         </section>
         <aside className="panel roster-panel">{rosterPanel}</aside>
       </main>
+      {room.phase !== "lobby" && recoveryPanels}
       <footer className="data-footer">
         <div>
           <a

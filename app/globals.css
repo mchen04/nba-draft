@@ -188,7 +188,7 @@ summary {
   background: #fff4d6;
 }
 .draft-app {
-  padding-bottom: 100px;
+  padding-bottom: var(--action-space, 100px);
   min-width: 0;
 }
 .draft-header {
@@ -477,7 +477,7 @@ summary {
   min-width: 180px;
 }
 .player-filters .inline-check {
-  flex-basis: 100%;
+  flex-basis: auto;
 }
 .table-hint {
   font-size: 12px;
@@ -800,7 +800,7 @@ summary {
   position: fixed;
   z-index: 19;
   right: 18px;
-  bottom: 95px;
+  bottom: var(--action-space, 95px);
   width: 390px;
   max-width: calc(100vw - 36px);
   max-height: 65vh;
@@ -867,9 +867,6 @@ summary {
     max-height: 300px;
     overflow: auto;
   }
-  .player-filters .search-label {
-    flex-basis: 100%;
-  }
   .draft-header {
     padding: 12px 16px;
   }
@@ -879,7 +876,7 @@ summary {
 }
 @media (max-width: 767px) {
   :root {
-    --header-height: 88px;
+    --header-height: 64px;
   }
   body {
     font-size: 14px;
@@ -909,11 +906,11 @@ summary {
     width: 65px;
   }
   .draft-app {
-    padding-bottom: 180px;
+    padding-bottom: var(--action-space, 180px);
   }
   .draft-header {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    padding: 8px 12px;
+    padding: 6px 12px;
     gap: 2px 10px;
     min-height: var(--header-height);
   }
@@ -926,7 +923,7 @@ summary {
     -webkit-line-clamp: 1;
   }
   .room-title small {
-    font-size: 11px;
+    display: none;
   }
   .clock-block {
     grid-column: 2;
@@ -955,10 +952,10 @@ summary {
     font-size: 10px;
   }
   .room-summary {
-    padding: 4px 12px;
+    padding: 0 12px;
     gap: 6px;
     flex-direction: row;
-    height: 52px;
+    height: 44px;
   }
   .room-summary button {
     min-height: 44px;
@@ -1021,7 +1018,7 @@ summary {
   }
   .workspace {
     display: block;
-    padding: 10px;
+    padding: 6px 10px;
   }
   .workspace .queue-panel,
   .workspace .roster-panel {
@@ -1032,12 +1029,19 @@ summary {
     display: block;
   }
   .player-filters {
-    padding: 10px;
+    padding: 4px 10px;
     gap: 8px;
   }
   .player-filters .search-label {
     flex: 1;
     min-width: 130px;
+  }
+  .search-caption {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
   .player-filters label {
     min-width: 95px;
@@ -1060,8 +1064,16 @@ summary {
   .table-scroll {
     max-height: 55vh;
   }
+  .table-scroll::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  .table-scroll::-webkit-scrollbar-thumb {
+    background: #a1b1c5;
+    border-radius: 3px;
+  }
   .player-table th:nth-child(2) {
-    min-width: 215px;
+    min-width: 235px;
   }
   .player-name strong {
     font-size: 13px;
@@ -1095,11 +1107,12 @@ summary {
     display: none;
   }
   .player-table td:nth-child(2) .player-name {
-    padding-right: 50px;
+    padding: 4px 48px 4px 4px;
+    min-height: 48px;
   }
   .player-name strong {
     white-space: normal;
-    max-width: 153px;
+    max-width: none;
   }
   .mobile-queue {
     display: flex;
@@ -1114,7 +1127,7 @@ summary {
     padding: 0 10px;
   }
   .panel-heading {
-    padding: 10px 12px;
+    padding: 2px 12px;
   }
   .panel-heading h2 {
     font-size: 17px;
@@ -1158,13 +1171,13 @@ summary {
   }
   .selection-tray {
     bottom: calc(52px + env(safe-area-inset-bottom));
-    padding: 8px 10px;
-    gap: 6px;
-    min-height: 106px;
+    padding: 6px 10px;
+    gap: 4px;
+    min-height: 90px;
     flex-wrap: wrap;
   }
   .selection-tray > div {
-    flex-basis: calc(100% - 100px);
+    flex-basis: 100%;
   }
   .selection-tray strong {
     font-size: 14px;
@@ -1179,12 +1192,13 @@ summary {
     max-width: 95px;
   }
   .selection-tray .draft-button {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     min-height: 44px;
-    font-size: 14px;
+    font-size: 12px;
   }
   .player-detail {
-    bottom: 175px;
+    bottom: var(--action-space, 175px);
     right: 10px;
     max-width: calc(100vw - 20px);
     width: 390px;

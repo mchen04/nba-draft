@@ -82,6 +82,10 @@ async function main() {
     );
     cli(first, ["scrollintoview", ".data-footer"]);
     shot(first, "cache-outage-desktop");
+    cli(first, ["set", "viewport", "320", "568"]);
+    cli(first, ["scrollintoview", ".data-footer"]);
+    shot(first, "cache-outage-phone");
+    cli(first, ["set", "viewport", "1440", "1000"]);
     fill(first, "Manager name", "Controls A");
     click(first, "Claim team 1");
     await waitFor(
@@ -172,6 +176,8 @@ async function main() {
       );
       waitedMilliseconds = Date.now() - stalledAt;
       assert.ok(waitedMilliseconds >= 29000 && waitedMilliseconds < 45000);
+      cli(second, ["scrollintoview", ".banner.error"]);
+      shot(second, "retry-phone");
     } finally {
       await stalled.query("ROLLBACK");
       stalled.release();
