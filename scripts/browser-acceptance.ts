@@ -69,21 +69,15 @@ function fill(
     );
     if (input === "") return;
   }
-  cli(
-    session,
-    [
-      "fill",
-      element(session, name === "Search players" ? "searchbox" : role, name),
-      input,
-    ],
-    privateResult,
+  const inputRole = name === "Search players" ? "searchbox" : role;
+  cli(session, ["focus", element(session, inputRole, name)]);
+  evaluate(session, "document.activeElement.select(); return true;");
+  cli(session, ["keyboard", "inserttext", input], privateResult);
+  assert.ok(
+    cli(session, ["get", "value", element(session, inputRole, name)], privateResult)
+      .value === input,
+    `Field contains the exact requested text: ${name}`,
   );
-  if (name === "Search players")
-    assert.equal(
-      cli(session, ["get", "value", element(session, "searchbox", name)]).value,
-      input,
-      "Search contains the exact requested text",
-    );
 }
 function select(session: string, name: string, input: string) {
   cli(session, ["select", element(session, "combobox", name), input]);
