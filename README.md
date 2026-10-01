@@ -107,6 +107,10 @@ Row locking and SQL uniqueness constraints resolve competing requests once.
 Pick requests include the expected turn and an idempotency key.
 Reuse the same key and payload after an uncertain response.
 The UI offers “Retry saved request” after a network failure.
+Going offline cancels a pending action without changing its idempotency key.
+Actions also stop waiting after 30 seconds and offer the same retry.
+The server may already have saved the action; cancellation does not undo it.
+Room reads stop waiting after 15 seconds, so polling can recover from a stalled connection.
 Rejected commands still commit any deadline catch-up that happened before them.
 Disconnected managers can inspect their last loaded room, but cannot draft.
 
@@ -159,6 +163,9 @@ node --env-file=/private/path/neon.env --import tsx --test --test-concurrency=1 
 npm run build
 node --env-file=/private/path/neon.env node_modules/next/dist/bin/next start --port 3104
 node --import tsx scripts/browser-acceptance.ts http://localhost:3104 /outside/checkout/evidence
+node --import tsx scripts/http-acceptance.ts http://localhost:3104 /outside/checkout/evidence
+node --env-file=/private/path/neon.env --import tsx scripts/ui-extra-acceptance.ts http://localhost:3104 /outside/checkout/evidence
+node --import tsx scripts/offline-acceptance.ts prepare http://localhost:3104 /outside/checkout/evidence
 ```
 
 Database tests use real cached ESPN players and task-identified rooms.
@@ -167,6 +174,13 @@ Do not run test outage simulation against a database serving a user draft setup.
 The test restores shared cache status after the injected failure.
 Browser acceptance uses the installed Agent Browser CLI with isolated sessions.
 Open every screenshot before claiming visual proof.
+The offline check closes its originating browsers after start.
+Stop the server, wait past all deadlines, and inspect stored state without calling the room API.
+Start a new server process, then run the offline script with `verify` instead of `prepare`.
+The check requires queued picks at the original deadlines, not the reconnect time.
+Extra browser checks require the private database environment for controlled row contention and source outage.
+`CAPTURE_TRANSPORT=none` permits functional checks when screenshot capture fails.
+It records unavailable captures and never proves visual acceptance.
 Chromium viewport emulation does not prove Safari or an actual iPhone.
 
 ## Vercel publication

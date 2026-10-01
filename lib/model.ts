@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z as zod } from "zod";
 
 export const slots = [
   "PG",
@@ -69,14 +69,14 @@ export type Catalog = {
   warning: string | null;
 };
 
-const counts = z.object(
+const counts = zod.object(
   Object.fromEntries(
-    slots.map((slot) => [slot, z.number().int().min(0).max(30)]),
-  ) as Record<Slot, z.ZodNumber>,
+    slots.map((slot) => [slot, zod.number().int().min(0).max(30)]),
+  ) as Record<Slot, zod.ZodNumber>,
 );
-const weights = z.partialRecord(
-  z.enum(countingStats as [Stat, ...Stat[]]),
-  z
+const weights = zod.partialRecord(
+  zod.enum(countingStats as [Stat, ...Stat[]]),
+  zod
     .number()
     .min(-100)
     .max(100)
@@ -85,18 +85,18 @@ const weights = z.partialRecord(
       "Use at most three decimal places.",
     ),
 );
-export const settingsSchema = z
+export const settingsSchema = zod
   .object({
-    teamCount: z.number().int().min(2).max(20),
-    order: z.array(z.number().int()).min(2).max(20),
-    format: z.enum(["3rr", "snake"]),
-    seconds: z.number().int().min(5).max(600),
+    teamCount: zod.number().int().min(2).max(20),
+    order: zod.array(zod.number().int()).min(2).max(20),
+    format: zod.enum(["3rr", "snake"]),
+    seconds: zod.number().int().min(5).max(600),
     slots: counts,
-    scoring: z.enum(["categories", "points"]),
-    categories: z.array(z.enum(categoryStats as [Stat, ...Stat[]])).min(1),
+    scoring: zod.enum(["categories", "points"]),
+    categories: zod.array(zod.enum(categoryStats as [Stat, ...Stat[]])).min(1),
     weights,
-    fallback: z.enum(["PTS", "FP", ...categoryStats]),
-    season: z.number().int().min(2020).max(2100),
+    fallback: zod.enum(["PTS", "FP", ...categoryStats]),
+    season: zod.number().int().min(2020).max(2100),
   })
   .superRefine((value, context) => {
     const capacity = Object.values(value.slots).reduce(
@@ -131,7 +131,7 @@ export const settingsSchema = z
         message: "Categories need a category fallback.",
       });
   });
-export type Settings = z.infer<typeof settingsSchema>;
+export type Settings = zod.infer<typeof settingsSchema>;
 export const defaultSettings: Settings = {
   teamCount: 12,
   order: Array.from({ length: 12 }, (_, index) => index),

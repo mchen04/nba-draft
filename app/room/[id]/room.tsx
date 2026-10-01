@@ -74,6 +74,7 @@ export default function DraftRoom({ id }: { id: string }) {
   const fetching = useRef(false),
     latestVersion = useRef(-1),
     sortInitialized = useRef(false);
+  const pendingAction = useRef<AbortController | null>(null);
   const accept = useCallback((view: View) => {
     if (view.version >= latestVersion.current) {
       latestVersion.current = view.version;
@@ -86,7 +87,10 @@ export default function DraftRoom({ id }: { id: string }) {
     if (fetching.current) return;
     fetching.current = true;
     try {
-      const response = await fetch(`/api/rooms/${id}`, { cache: "no-store" });
+      const response = await fetch(`/api/rooms/${id}`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(15000),
+      });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
       accept(result);
@@ -99,6 +103,7 @@ export default function DraftRoom({ id }: { id: string }) {
   const loadCatalog = useCallback(async () => {
     const response = await fetch(`/api/rooms/${id}?catalog=1`, {
       cache: "no-store",
+      signal: AbortSignal.timeout(30000),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error);
@@ -112,11 +117,15 @@ export default function DraftRoom({ id }: { id: string }) {
       tick = setInterval(() => setNow(Date.now()), 250);
     const reconnect = () => load();
     window.addEventListener("online", reconnect);
-    const offline = () => setConnected(false);
+    const offline = () => {
+      setConnected(false);
+      pendingAction.current?.abort();
+    };
     window.addEventListener("offline", offline);
     return () => {
       clearInterval(poll);
       clearInterval(tick);
+      pendingAction.current?.abort();
       window.removeEventListener("online", reconnect);
       window.removeEventListener("offline", offline);
     };
@@ -157,11 +166,15 @@ export default function DraftRoom({ id }: { id: string }) {
     const payload =
       savedBody ??
       JSON.stringify({ ...command, requestId: crypto.randomUUID() });
+    const controller = new AbortController();
+    pendingAction.current = controller;
+    const timeout = setTimeout(() => controller.abort(), 30000);
     try {
       const response = await fetch(`/api/rooms/${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: payload,
+        signal: controller.signal,
       });
       const result = await response.json();
       if (!response.ok) {
@@ -185,7 +198,10 @@ export default function DraftRoom({ id }: { id: string }) {
       }
       if (command.type === "refresh") await loadCatalog();
     } catch (failure) {
-      if (failure instanceof TypeError) {
+      if (
+        failure instanceof TypeError ||
+        (failure instanceof Error && failure.name === "AbortError")
+      ) {
         setConnected(false);
         setRetry({ body: payload, label });
         setError(
@@ -198,6 +214,8 @@ export default function DraftRoom({ id }: { id: string }) {
             : "Action failed. Try again.",
         );
     } finally {
+      clearTimeout(timeout);
+      if (pendingAction.current === controller) pendingAction.current = null;
       setBusy(false);
     }
   }

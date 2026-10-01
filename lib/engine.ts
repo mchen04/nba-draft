@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { PoolClient } from "pg";
-import { z } from "zod";
+import { z as zod } from "zod";
 import { database } from "./db";
 import { getCatalog } from "./espn";
 import { Member, Room, Settings, View, settingsSchema } from "./model";
@@ -23,51 +23,51 @@ export class DraftError extends Error {
 export const hash = (input: string) =>
   createHash("sha256").update(input).digest("hex");
 const secret = () => randomBytes(24).toString("base64url");
-const label = z
+const label = zod
   .string()
   .trim()
   .min(1)
   .max(60)
   .regex(/^[^\u0000-\u001f\u007f]*$/);
-const base = { requestId: z.string().uuid() };
-export const actionSchema = z.discriminatedUnion("type", [
-  z.object({
+const base = { requestId: zod.string().uuid() };
+export const actionSchema = zod.discriminatedUnion("type", [
+  zod.object({
     ...base,
-    type: z.literal("claim"),
-    slot: z.number().int().min(0).max(19),
+    type: zod.literal("claim"),
+    slot: zod.number().int().min(0).max(19),
     name: label,
   }),
-  z.object({
+  zod.object({
     ...base,
-    type: z.literal("recover"),
-    code: z.string().min(20).max(100),
+    type: zod.literal("recover"),
+    code: zod.string().min(20).max(100),
   }),
-  z.object({ ...base, type: z.literal("ready"), ready: z.boolean() }),
-  z.object({ ...base, type: z.literal("settings"), settings: settingsSchema }),
-  z.object({ ...base, type: z.literal("refresh") }),
-  z.object({ ...base, type: z.literal("start"), acknowledge: z.boolean() }),
-  z.object({
+  zod.object({ ...base, type: zod.literal("ready"), ready: zod.boolean() }),
+  zod.object({ ...base, type: zod.literal("settings"), settings: settingsSchema }),
+  zod.object({ ...base, type: zod.literal("refresh") }),
+  zod.object({ ...base, type: zod.literal("start"), acknowledge: zod.boolean() }),
+  zod.object({
     ...base,
-    type: z.literal("pick"),
-    playerId: z.number().int().positive(),
-    expectedIndex: z.number().int().min(0),
-    forTeam: z.boolean().optional(),
+    type: zod.literal("pick"),
+    playerId: zod.number().int().positive(),
+    expectedIndex: zod.number().int().min(0),
+    forTeam: zod.boolean().optional(),
   }),
-  z.object({
+  zod.object({
     ...base,
-    type: z.literal("queue"),
-    players: z.array(z.number().int().positive()).max(100),
+    type: zod.literal("queue"),
+    players: zod.array(zod.number().int().positive()).max(100),
   }),
-  z.object({ ...base, type: z.literal("pause") }),
-  z.object({ ...base, type: z.literal("resume") }),
-  z.object({
+  zod.object({ ...base, type: zod.literal("pause") }),
+  zod.object({ ...base, type: zod.literal("resume") }),
+  zod.object({
     ...base,
-    type: z.literal("undo"),
-    expectedIndex: z.number().int().min(1),
+    type: zod.literal("undo"),
+    expectedIndex: zod.number().int().min(1),
   }),
 ]);
-type Action = z.infer<typeof actionSchema>;
-export const createSchema = z.object({
+type Action = zod.infer<typeof actionSchema>;
+export const createSchema = zod.object({
   name: label,
   commissioner: label,
   settings: settingsSchema,
@@ -257,7 +257,7 @@ export async function transactRoom(
   token?: string,
   action?: Action,
 ) {
-  if (!z.string().uuid().safeParse(id).success)
+  if (!zod.string().uuid().safeParse(id).success)
     throw new DraftError("Room not found.", 404);
   const client = await database().connect();
   let issuedToken: string | undefined,

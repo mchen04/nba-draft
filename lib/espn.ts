@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z as zod } from "zod";
 import { Catalog, Player, Slot, Stat, statIds } from "./model";
 import { database } from "./db";
 
@@ -46,26 +46,26 @@ const slotNames: Record<number, Slot> = {
   11: "UTIL",
   12: "BN",
 };
-const sourcePlayer = z.object({
-  id: z.number().int().positive(),
-  fullName: z.string().min(1),
-  proTeamId: z.number().int(),
-  eligibleSlots: z.array(z.number().int()),
-  injuryStatus: z.string().optional(),
-  stats: z
+const sourcePlayer = zod.object({
+  id: zod.number().int().positive(),
+  fullName: zod.string().min(1),
+  proTeamId: zod.number().int(),
+  eligibleSlots: zod.array(zod.number().int()),
+  injuryStatus: zod.string().optional(),
+  stats: zod
     .array(
-      z.object({
-        seasonId: z.number(),
-        statSourceId: z.number(),
-        statSplitTypeId: z.number(),
-        scoringPeriodId: z.number(),
-        stats: z.record(z.string(), z.number()),
+      zod.object({
+        seasonId: zod.number(),
+        statSourceId: zod.number(),
+        statSplitTypeId: zod.number(),
+        scoringPeriodId: zod.number(),
+        stats: zod.record(zod.string(), zod.number()),
       }),
     )
     .optional(),
 });
-const responseSchema = z.object({
-  players: z.array(z.object({ player: sourcePlayer })).min(1),
+const responseSchema = zod.object({
+  players: zod.array(zod.object({ player: sourcePlayer })).min(1),
 });
 
 export function normalizeCatalog(
