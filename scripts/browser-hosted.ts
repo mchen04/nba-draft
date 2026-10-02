@@ -92,15 +92,25 @@ function draft(session: string) {
   );
   return name;
 }
-// The page itself must show every drafted name, not just the API.
+// Saved picks must appear as numbered pick-strip entries ("Pick N, manager, player").
+// Page text is not enough: undrafted players are listed by name too.
+function strip(session: string): string[] {
+  return evaluate(
+    session,
+    "return [...document.querySelectorAll('.pick-strip [aria-label^=\"Pick \"]')].map(b => b.getAttribute('aria-label'))",
+  );
+}
+const savedInStrip = (labels: string[], names: string[]) =>
+  names.every((name, i) =>
+    labels.some(
+      (label) => label.startsWith(`Pick ${i + 1},`) && label.endsWith(`, ${name}`),
+    ),
+  );
 function shows(session: string, names: string[], label: string) {
   waitFor(
     session,
-    `${label} shows ${names.join(", ")}`,
-    () => {
-      const visible = text(session);
-      return names.every((name) => visible.includes(name));
-    },
+    `${label} pick strip shows ${names.map((name, i) => `${i + 1}. ${name}`).join(", ")}`,
+    () => savedInStrip(strip(session), names),
     30000,
   );
   record({ kind: "visible", session, label, names });
@@ -161,6 +171,7 @@ cli(H2, ["set", "offline", "on"]);
 waitFor(H2, "offline banner", () => /Offline/.test(text(H2)), 20000);
 cli(H2, ["set", "offline", "off"]);
 waitFor(H2, "back online", () => !/Offline/.test(text(H2)), 20000);
+shows(H2, [first], "phone-after-reconnect");
 const second = draft(H2);
 shows(H1, [first, second], "desktop-sees-pick-2");
 record({ kind: "flow", name: "second client and reconnect", ok: true });
@@ -188,7 +199,19 @@ for (const [session, label] of [
   [H3, "tablet-final"],
 ])
   shows(session, [first, second, third], label);
+cli(H3, ["reload"]);
+shows(H3, [first, second, third], "tablet-after-reload");
 record({ kind: "flow", name: "recovery on a third device", ok: true });
+
+// The check rejects a listed but undrafted player as pick 4, which page text would accept.
+const undrafted: string = evaluate(
+  H1,
+  "return document.querySelector('.player-table tbody tr:not(.taken) button.item').getAttribute('aria-label').replace(/^Select /, '')",
+);
+assert.ok(text(H1).includes(undrafted));
+assert.equal(savedInStrip(strip(H1), [first, second, third, undrafted]), false);
+assert.equal(savedInStrip(strip(H1), [first, third, second]), false);
+record({ kind: "negative", undrafted, rejected: true });
 
 // Pause so the controlled room stops its clock, then record the saved state.
 click(H1, "Pause");

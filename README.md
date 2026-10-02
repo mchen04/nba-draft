@@ -268,7 +268,7 @@ This release adds `db/002.sql`, which moves player pools out of rooms into share
 Older code cannot read a migrated room: every action on it fails until this release serves it.
 So never run the migration while an older deployment still serves the same database.
 
-- **Existing database:** deploy first, then run `scripts/database.ts migrate` with the direct connection at once. In between, existing rooms keep working on their embedded pools. Only room creation and player-data refresh fail until the migration runs.
+- **Existing database:** deploy first, then run `scripts/database.ts migrate` with the direct connection at once. In between, existing rooms keep working on their embedded pools. Only room creation, player-data refresh, and a lobby season change fail until the migration runs.
 - **New, empty database:** migrate it first. Then switch `DATABASE_URL` to it and redeploy this release in the same step. An older deployment must never point at it.
 
 Rolling back past this release breaks every migrated room.

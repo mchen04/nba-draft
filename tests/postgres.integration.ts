@@ -1018,7 +1018,7 @@ test("migration moves a legacy embedded pool into a shared dataset without touch
       ),
     );
     const restored = await client.query(
-      "SELECT data->'catalog'->'players' AS players, (SELECT count(*)::int FROM nba_draft.catalogs WHERE dataset_id IS NOT NULL AND NOT snapshot ? 'players') AS bare FROM nba_draft.rooms WHERE id=$1",
+      "SELECT data->'catalog'->'players' AS players, (SELECT count(*)::int FROM nba_draft.catalogs WHERE dataset_id IS NOT NULL AND (snapshot IS NULL OR NOT snapshot ? 'players')) AS bare FROM nba_draft.rooms WHERE id=$1",
       [room.id],
     );
     assert.deepEqual(restored.rows[0].players, players);
