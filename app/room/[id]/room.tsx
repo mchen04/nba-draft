@@ -6,6 +6,7 @@ import {
   Settings,
   Slot,
   Stat,
+  Unchanged,
   View,
   categoryStats,
   slots,
@@ -101,11 +102,19 @@ export default function DraftRoom({ id }: { id: string }) {
   const fetching = useRef(false),
     latestVersion = useRef(-1),
     readGeneration = useRef(0),
-    sortInitialized = useRef(false);
+    sortInitialized = useRef(false),
+    catalogLoading = useRef<number | null>(null);
   const pendingAction = useRef<AbortController | null>(null),
     menuRef = useRef<HTMLDetailsElement | null>(null);
-  const accept = useCallback((view: View) => {
-    if (view.version >= latestVersion.current) {
+  const accept = useCallback((view: View | Unchanged) => {
+    if ("unchanged" in view)
+      setRoom((current) =>
+        current?.version === view.version &&
+        current.commissionerIdle !== view.commissionerIdle
+          ? { ...current, commissionerIdle: view.commissionerIdle }
+          : current,
+      );
+    else if (view.version >= latestVersion.current) {
       latestVersion.current = view.version;
       setRoom(view);
     }
@@ -117,7 +126,10 @@ export default function DraftRoom({ id }: { id: string }) {
     fetching.current = true;
     const generation = readGeneration.current;
     try {
-      const response = await fetch(`/api/rooms/${id}`, {
+      // The server answers "unchanged" when the room still has this version.
+      const since =
+        latestVersion.current >= 0 ? `?since=${latestVersion.current}` : "";
+      const response = await fetch(`/api/rooms/${id}${since}`, {
         cache: "no-store",
         signal: AbortSignal.timeout(15000),
       });
@@ -131,18 +143,24 @@ export default function DraftRoom({ id }: { id: string }) {
       fetching.current = false;
     }
   }, [id, accept]);
-  const loadCatalog = useCallback(async () => {
-    const response = await fetch(`/api/rooms/${id}?catalog=1`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(30000),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error);
-    setCatalog(result);
-  }, [id]);
+  // Player data is immutable per dataset id, so the browser and CDN cache it.
+  // A room saved before migration (no dataset id) still serves its own pool.
+  const loadCatalog = useCallback(
+    async (dataset: number | undefined) => {
+      const response = await fetch(
+        dataset ? `/api/catalog/${dataset}` : `/api/rooms/${id}?catalog=1`,
+        dataset
+          ? { signal: AbortSignal.timeout(30000) }
+          : { cache: "no-store", signal: AbortSignal.timeout(30000) },
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      setCatalog(result);
+    },
+    [id],
+  );
   useEffect(() => {
     load();
-    loadCatalog().catch((failure) => setError(failure.message));
     setRecoveryCode(sessionStorage.getItem(`recovery_${id}`) ?? "");
     const pendingClaim = sessionStorage.getItem(`claim_retry_${id}`);
     if (pendingClaim) {
@@ -167,7 +185,7 @@ export default function DraftRoom({ id }: { id: string }) {
       window.removeEventListener("online", reconnect);
       window.removeEventListener("offline", offline);
     };
-  }, [id, load, loadCatalog]);
+  }, [id, load]);
   useEffect(() => {
     if (room && !sortInitialized.current) {
       setSort(room.settings.scoring === "points" ? "FP" : "PTS");
@@ -188,13 +206,19 @@ export default function DraftRoom({ id }: { id: string }) {
     setOtherRooms(recentRooms().filter((candidate) => candidate.id !== id));
   }, [id, roomName, myLabel]);
   useEffect(() => {
+    if (!room) return;
+    const dataset = room.catalog.dataset ?? 0;
     if (
-      room &&
-      catalog &&
-      (room.catalog.fetchedAt !== catalog.fetchedAt ||
-        room.catalog.season !== catalog.season)
+      (catalog && (catalog.dataset ?? 0) === dataset) ||
+      catalogLoading.current === dataset
     )
-      loadCatalog().catch((failure) => setError(failure.message));
+      return;
+    catalogLoading.current = dataset;
+    loadCatalog(dataset || undefined)
+      .catch((failure) => setError(failure.message))
+      .finally(() => {
+        if (catalogLoading.current === dataset) catalogLoading.current = null;
+      });
   }, [room, catalog, loadCatalog]);
   async function send(command: Command, label = "Saved", savedBody?: string) {
     if (busy) return;
@@ -258,11 +282,7 @@ export default function DraftRoom({ id }: { id: string }) {
         setSelectedId(null);
         setDetails(false);
       }
-      if (command.type === "settings") {
-        setSettings(null);
-        await loadCatalog();
-      }
-      if (command.type === "refresh") await loadCatalog();
+      if (command.type === "settings") setSettings(null);
     } catch (failure) {
       if (
         failure instanceof TypeError ||
@@ -405,8 +425,8 @@ export default function DraftRoom({ id }: { id: string }) {
         <div className="row">
           <button
             onClick={() => {
+              setError("");
               load();
-              loadCatalog().catch((failure) => setError(failure.message));
             }}
           >
             Reconnect
@@ -461,9 +481,12 @@ export default function DraftRoom({ id }: { id: string }) {
   ).length;
   const commissionerName =
     room.members.find((member) => member.commissioner)?.name ?? null;
-  const dataAge = Date.now() - new Date(catalog.fetchedAt).getTime();
+  // Room metadata names the pinned dataset, its last ESPN check, and any refresh failure.
+  const info = room.catalog;
+  const dataAge =
+    Date.now() - new Date(info.checkedAt ?? info.fetchedAt).getTime();
   const dataStale =
-    dataAge > 86400000 || !!catalog.warning || catalog.projectedCount === 0;
+    dataAge > 8 * 86400000 || !!info.warning || info.projectedCount === 0;
   const openSlots = Array.from(
     { length: room.settings.teamCount },
     (_, slot) => slot,
@@ -1160,10 +1183,12 @@ export default function DraftRoom({ id }: { id: string }) {
           >
             ESPN projections
           </a>{" "}
-          · {catalog.season - 1}–{String(catalog.season).slice(-2)} ·{" "}
-          {catalog.projectedCount}/{players.length} projected · retrieved{" "}
-          {new Date(catalog.fetchedAt).toLocaleString()}
-          {catalog.warning && <p className="warn">{catalog.warning}</p>}
+          · {info.season - 1}–{String(info.season).slice(-2)} · data version{" "}
+          {info.dataset} · {info.projectedCount}/{players.length} projected ·
+          updated {new Date(info.fetchedAt).toLocaleString()}
+          {info.checkedAt &&
+            ` · checked ${new Date(info.checkedAt).toLocaleString()}`}
+          {info.warning && <p className="warn">{info.warning}</p>}
           {!lobby && <p>Frozen at start. ESPN outages do not affect picks.</p>}
           {commissioner && lobby && (
             <button
@@ -1329,8 +1354,8 @@ export default function DraftRoom({ id }: { id: string }) {
           <span
             className={`data-badge ${dataStale ? "stale" : ""}`}
             title={
-              catalog.warning ??
-              `ESPN data retrieved ${new Date(catalog.fetchedAt).toLocaleString()}`
+              info.warning ??
+              `ESPN data updated ${new Date(info.fetchedAt).toLocaleString()}`
             }
           >
             ESPN {age(dataAge)}
@@ -1469,7 +1494,7 @@ export default function DraftRoom({ id }: { id: string }) {
                 {selected.team} · {selected.positions.join(", ")}
                 {injuryOf(selected) ? ` · ${injuryOf(selected)}` : ""} ·{" "}
                 {selected.projected
-                  ? `${catalog.season - 1}–${String(catalog.season).slice(-2)} ESPN projection`
+                  ? `${info.season - 1}–${String(info.season).slice(-2)} ESPN projection`
                   : "No current ESPN projection"}
               </p>
               <div className="details-stats">

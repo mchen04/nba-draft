@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DraftError } from "./engine";
 import { ZodError } from "zod";
+import { timingSafeEqual } from "node:crypto";
 
 export const cookieName = (id: string) => `nba_${id}`;
 export function json(
@@ -56,4 +57,17 @@ export function problem(error: unknown) {
     },
     503,
   );
+}
+// Vercel Cron sends `Authorization: Bearer $CRON_SECRET` when that variable is set.
+export function cronAuthorized(request: NextRequest) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret)
+    return json({ error: "Scheduled jobs are not configured." }, 503);
+  const expected = Buffer.from(`Bearer ${secret}`),
+    received = Buffer.from(request.headers.get("authorization") ?? "");
+  if (
+    expected.length !== received.length ||
+    !timingSafeEqual(expected, received)
+  )
+    return json({ error: "Not authorized." }, 401);
 }

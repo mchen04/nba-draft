@@ -117,7 +117,9 @@ Roster percentage totals use summed makes divided by summed attempts.
 
 Postgres owns every deadline.
 No browser timer makes picks.
-Every room read or action locks the room and resolves expired turns first.
+Every action locks the room and resolves expired turns first.
+A poll reads the room row without a lock. Only a poll that finds a due turn takes the lock and catches up.
+A tab sends the room version it shows. An unchanged room answers with its version and clock only.
 Automatic picks use each manager's highest available eligible queue entry, then the frozen ranking.
 Each new deadline starts at the previous deadline, not at the reconnect time.
 
@@ -126,7 +128,7 @@ The next request catches up every expired turn in one transaction.
 It can complete an entire expired draft without the original browser or process.
 Pick timestamps represent logical deadlines during catch-up.
 This is lazy catch-up, not a continuously running offline feed.
-Draft clocks need no cron or background loop. The daily expiry job (below) is separate.
+Draft clocks need no cron or background loop. The scheduled jobs (below) are separate.
 The Next.js handlers use Node functions with a 60-second execution limit.
 
 Manual picks after an expired deadline lose to the server timeout.
@@ -166,13 +168,35 @@ ESPN's own percentages stay unchanged. The app derives a missing percentage from
 Points scores require every nonzero-weight input.
 Counting rates use season totals divided by projected games.
 
-Validated snapshots persist in Postgres and refresh after six hours.
+Each validated ESPN pool is stored once in `nba_draft.datasets` and never changes.
+Its metadata records the source URL, the player count ESPN reported and returned, season, mapping version, and retrieval time.
+Rooms store only the dataset id and its metadata, not the players.
+Browsers load players from `/api/catalog/{id}`. The response is immutable, so browsers and the CDN cache it.
+Each server instance also keeps the last few datasets in memory.
+
+The current dataset is checked against ESPN once a week: by the weekly cron job, or by the first room creation after a week.
+A changed pool becomes a new dataset. An unchanged pool keeps its dataset and first retrieval time.
 A mapping change also triggers a refresh.
 Refresh attempts are limited to one per season per 15 minutes.
-Failures keep the old values. A small amber “ESPN” age badge marks stale or failed data.
-The ☰ menu shows source, coverage, retrieval time, and any warning.
+Failures keep the last good dataset and record the error. A small amber “ESPN” age badge marks data older than eight days or a failed check.
+The ☰ menu shows source, season, dataset version, coverage, update time, last check time, and any warning.
 Stale data never blocks the start of a draft.
-Live drafts use their own frozen snapshot, so ESPN outages do not affect picks.
+A room keeps the dataset it was created with. The commissioner can switch a lobby to the newest dataset with refresh.
+Live drafts keep their dataset, so a refresh or an ESPN outage never changes a draft in progress.
+
+Weekly checks suit season projections and positions.
+Injury status and NBA team can change daily, so they may lag by up to a week. A lobby refresh picks up the latest values.
+
+## Scheduled jobs
+
+`vercel.json` registers two jobs. Both require `CRON_SECRET`; Vercel sends it as a bearer token.
+
+- `/api/cron/catalog`, Mondays 10:41 UTC: checks ESPN and stores a new dataset when the pool changed.
+- `/api/cron/expire`, daily 09:17 UTC: room expiry, below.
+
+Vercel's Cron Jobs switch covers the whole project.
+Expiry runs only when the server sets `ROOM_EXPIRY=on`; otherwise it returns `{"paused":true}` and reads nothing.
+So enabling cron jobs for the weekly check does not delete rooms.
 
 ## Room expiry
 
@@ -183,8 +207,8 @@ A daily Vercel Cron job calls `/api/cron/expire` at 09:17 UTC (`vercel.json`).
 Vercel's free Hobby plan allows one run per day and may run any time within that hour ([Vercel cron limits](https://vercel.com/docs/cron-jobs/usage-and-pricing), read 2026-10-01).
 The job first resolves expired turns. A draft that is still live stays.
 It then deletes the room, its picks, and its request receipts.
-The job requires `CRON_SECRET`; Vercel sends it automatically as a bearer token.
-Without it, the route returns 503 and deletes nothing.
+The job requires `CRON_SECRET` and `ROOM_EXPIRY=on`.
+Without the secret, the route returns 503 and deletes nothing.
 `?dryRun=1` reports counts without changes.
 
 Catch-up limits:
@@ -212,6 +236,7 @@ npm run build
 node --env-file=/private/path/neon.env --env-file=/private/path/cron.env node_modules/next/dist/bin/next start --port 3167
 ORIGIN=http://localhost:3167 EVIDENCE=/outside/checkout/evidence node --import tsx scripts/browser-acceptance.ts
 ORIGIN=http://localhost:3167 EVIDENCE=/outside/checkout/evidence node --import tsx scripts/browser-rooms.ts
+ORIGIN=https://your-deployment EVIDENCE=/outside/checkout/evidence node --import tsx scripts/browser-hosted.ts
 node --import tsx scripts/http-acceptance.ts http://localhost:3167 /outside/checkout/evidence
 ```
 
@@ -220,6 +245,7 @@ The expiry test refuses to sweep if any unrelated room is already past seven day
 The outage test uses the 2025 cache row, which the app never offers.
 Browser acceptance drives a complete three-manager draft on phone, tablet, and desktop sizes.
 The rooms script switches one browser between two rooms and checks keyboard use, control names, errors, and scroll retention.
+The hosted script is bounded for a live deployment: one room, three sessions, three picks, reload, offline reconnect, and recovery on a third device. It pauses the room at the end.
 It records document and panel scroll sizes for every screen and fails on any document scroll.
 Open every screenshot before claiming visual proof.
 Chromium viewport emulation does not prove Safari or an actual iPhone.
@@ -229,19 +255,21 @@ Chromium viewport emulation does not prove Safari or an actual iPhone.
 The live app deploys from `main` through the connected Vercel project.
 
 1. Set pooled `DATABASE_URL` as a server-only environment value.
-2. Set `CRON_SECRET` (any long random string) as a server-only value. Expiry stays off without it.
+2. Set `CRON_SECRET` (any long random string) as a server-only value. Scheduled jobs stay off without it. Set `ROOM_EXPIRY=on` only when room expiry should delete rooms.
 3. Push a branch, open a PR, and merge after checks. Vercel builds `main` and registers the cron job from `vercel.json`.
 4. Confirm the production deployment matches the merged commit.
 5. Run browser acceptance against the deployment and inspect fresh screenshots.
-6. Confirm the cron job in the Vercel project settings, then read its daily log.
+6. Confirm the cron jobs in the Vercel project settings, then read their logs.
 
-The schema needs no migration for this release. Activity time lives in each room's JSON data.
+This release adds `db/002.sql`, which moves player pools out of rooms into shared datasets.
+Run `scripts/database.ts migrate` with the direct connection before the deploy, and again after it.
+The second run converts any room an older deployment saved in between. Until then such a room keeps working on its own embedded pool.
 Do not print connection values or put them in URLs, screenshots, source, or client bundles.
 Do not buy services or change unrelated infrastructure.
 
 ## Recovery and boundaries
 
-Room state, ownership hashes, queues, frozen player data, and clocks persist in Postgres.
+Room state, ownership hashes, queues, pinned player datasets, and clocks persist in Postgres.
 Restarting Next.js does not reset the draft.
 SQL pick rows mirror committed board state, with unique room/player and room/pick constraints.
 All mutations serialize on the room row.

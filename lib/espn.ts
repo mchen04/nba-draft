@@ -1,6 +1,6 @@
 import { z as zod } from "zod";
-import { Catalog, Player, Slot, Stat, statIds } from "./model";
-import { begin } from "./db";
+import { Catalog, CatalogMeta, Player, Slot, Stat, statIds } from "./model";
+import { begin, database } from "./db";
 import { PoolClient } from "pg";
 
 const teamNames = [
@@ -97,10 +97,15 @@ export function sparse(stats: Record<string, number>): Record<string, number> {
 // Bump when normalization changes so cached snapshots refresh from ESPN.
 export const mappingVersion = 2;
 
+const sourceName = "ESPN Fantasy Basketball projections";
+const sourceUrl = (season: number) =>
+  `https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/${season}/segments/0/leaguedefaults/1?view=kona_player_info`;
+
 export function normalizeCatalog(
   body: unknown,
   season: number,
   fetchedAt = new Date().toISOString(),
+  reported: number | null = null,
 ): Catalog {
   const parsed = responseSchema.parse(body);
   const ids = new Set<number>();
@@ -181,9 +186,16 @@ export function normalizeCatalog(
   }
   if (!players.length) throw new Error("No recognized eligible players.");
   return {
+    dataset: 0,
     season,
     mapping: mappingVersion,
     fetchedAt,
+    source: {
+      name: sourceName,
+      url: sourceUrl(season),
+      reported,
+      received: parsed.players.length,
+    },
     players,
     projectedCount: players.filter((player) => player.projected).length,
     missing: Object.fromEntries(
@@ -200,24 +212,21 @@ export function normalizeCatalog(
 }
 
 export async function fetchEspn(season: number): Promise<Catalog> {
-  const response = await fetch(
-    `https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/${season}/segments/0/leaguedefaults/1?view=kona_player_info`,
-    {
-      headers: {
-        Accept: "application/json",
-        "X-Fantasy-Filter": JSON.stringify({
-          players: {
-            limit: 1500,
-            sortPercOwned: { sortPriority: 1, sortAsc: false },
-            filterStatsForSourceIds: { value: [1] },
-            filterStatsForSplitTypeIds: { value: [0] },
-          },
-        }),
-      },
-      cache: "no-store",
-      signal: AbortSignal.timeout(15000),
+  const response = await fetch(sourceUrl(season), {
+    headers: {
+      Accept: "application/json",
+      "X-Fantasy-Filter": JSON.stringify({
+        players: {
+          limit: 1500,
+          sortPercOwned: { sortPriority: 1, sortAsc: false },
+          filterStatsForSourceIds: { value: [1] },
+          filterStatsForSplitTypeIds: { value: [0] },
+        },
+      }),
     },
-  );
+    cache: "no-store",
+    signal: AbortSignal.timeout(15000),
+  });
   if (!response.ok) throw new Error("Projection source is unavailable.");
   const body = await response.json();
   const parsed = responseSchema.parse(body);
@@ -227,9 +236,50 @@ export async function fetchEspn(season: number): Promise<Catalog> {
     parsed.players.length >= 1500
   )
     throw new Error("Source pool may be truncated.");
-  return normalizeCatalog(body, season);
+  return normalizeCatalog(
+    body,
+    season,
+    undefined,
+    count === null ? null : Number(count),
+  );
 }
 
+// The shared pool is checked weekly. A failed check keeps the last good dataset.
+export const refreshAge = 7 * 86400000;
+export const retryDelay = 15 * 60000;
+
+// Datasets never change after insert, so each server instance keeps recent ones.
+const datasets = new Map<number, Catalog>();
+function remember(catalog: Catalog) {
+  datasets.delete(catalog.dataset);
+  datasets.set(catalog.dataset, catalog);
+  if (datasets.size > 4) datasets.delete(datasets.keys().next().value!);
+}
+// The full dataset as served to browsers; null when the id does not exist.
+export async function datasetCatalog(id: number, client?: PoolClient) {
+  const cached = datasets.get(id);
+  if (cached) return cached;
+  const result = await (client ?? database()).query(
+    "SELECT meta, players FROM nba_draft.datasets WHERE id=$1",
+    [id],
+  );
+  if (!result.rows.length) return null;
+  const catalog: Catalog = {
+    ...result.rows[0].meta,
+    dataset: id,
+    players: result.rows[0].players,
+  };
+  remember(catalog);
+  return catalog;
+}
+export async function datasetPlayers(id: number, client?: PoolClient) {
+  const catalog = await datasetCatalog(id, client);
+  if (!catalog) throw new Error("Player dataset is missing.");
+  return catalog.players;
+}
+
+// Returns the current shared dataset for a season, with players, refreshing it from ESPN
+// when the last good check is a week old or `force` is set (at most once per 15 minutes).
 export async function getCatalog(
   season: number,
   force = false,
@@ -264,35 +314,41 @@ async function readCatalog(
     [season],
   );
   const result = await client.query(
-    "SELECT * FROM nba_draft.catalogs WHERE season=$1 FOR UPDATE",
+    "SELECT c.dataset_id, c.attempted_at, c.checked_at, c.error, d.meta FROM nba_draft.catalogs c LEFT JOIN nba_draft.datasets d ON d.id = c.dataset_id WHERE c.season=$1 FOR UPDATE OF c",
     [season],
   );
   const cached = result.rows[0];
-  const snapshot = cached.snapshot as Catalog | null;
-  const age = snapshot
-    ? Date.now() - new Date(snapshot.fetchedAt).getTime()
+  const meta: CatalogMeta | null = cached.dataset_id
+    ? {
+        ...cached.meta,
+        dataset: Number(cached.dataset_id),
+        checkedAt: cached.checked_at?.toISOString(),
+      }
+    : null;
+  const age = cached.checked_at
+    ? Date.now() - cached.checked_at.getTime()
     : Infinity;
   const sinceAttempt = cached.attempted_at
-    ? Date.now() - new Date(cached.attempted_at).getTime()
+    ? Date.now() - cached.attempted_at.getTime()
     : Infinity;
-  const current = snapshot?.mapping === mappingVersion;
+  const current = meta?.mapping === mappingVersion;
+  const withPlayers = async (catalog: CatalogMeta) => ({
+    ...catalog,
+    players: await datasetPlayers(catalog.dataset, client),
+  });
   if (
-    (snapshot && current && !force && age < 6 * 3600000) ||
-    sinceAttempt < 15 * 60000
+    (meta && current && !force && age < refreshAge) ||
+    sinceAttempt < retryDelay
   ) {
-    if (!snapshot)
+    if (!meta)
       return new Error(
         "Projection source is unavailable. Try again after 15 minutes.",
       );
-    return { ...snapshot, warning: cached.error ?? snapshot.warning };
+    return withPlayers({ ...meta, warning: cached.error ?? meta.warning });
   }
+  let fetched: Catalog;
   try {
-    const catalog = await fetchEspn(season);
-    await client.query(
-      "UPDATE nba_draft.catalogs SET snapshot=$2, attempted_at=now(), error=NULL WHERE season=$1",
-      [season, JSON.stringify(catalog)],
-    );
-    return catalog;
+    fetched = await fetchEspn(season);
   } catch {
     const warning =
       "ESPN refresh failed. Cached projections remain unchanged. Try again after 15 minutes.";
@@ -300,9 +356,33 @@ async function readCatalog(
       "UPDATE nba_draft.catalogs SET attempted_at=now(), error=$2 WHERE season=$1",
       [season, warning],
     );
-    if (snapshot) return { ...snapshot, warning };
+    if (meta) return withPlayers({ ...meta, warning });
     return new Error(
       "No cached player pool exists for this season. Try again after 15 minutes.",
     );
   }
+  const { players: pool, dataset: _dataset, ...fresh } = fetched;
+  // An unchanged pool keeps its dataset and first retrieval time.
+  const stored = await client.query(
+    `WITH inserted AS (
+       INSERT INTO nba_draft.datasets(season, digest, meta, players)
+       VALUES($1, nba_draft.dataset_digest($1, $2, $4::jsonb), $3, $4)
+       ON CONFLICT (digest) DO NOTHING RETURNING id, meta)
+     SELECT id, meta FROM inserted
+     UNION ALL SELECT id, meta FROM nba_draft.datasets WHERE digest = nba_draft.dataset_digest($1, $2, $4::jsonb)
+     LIMIT 1`,
+    [season, fresh.mapping, JSON.stringify(fresh), JSON.stringify(pool)],
+  );
+  const id = Number(stored.rows[0].id);
+  const checked = await client.query(
+    "UPDATE nba_draft.catalogs SET dataset_id=$2, attempted_at=now(), checked_at=clock_timestamp(), error=NULL WHERE season=$1 RETURNING checked_at",
+    [season, id],
+  );
+  const catalog: Catalog = {
+    ...stored.rows[0].meta,
+    dataset: id,
+    players: pool,
+  };
+  remember(catalog);
+  return { ...catalog, checkedAt: checked.rows[0].checked_at.toISOString() };
 }

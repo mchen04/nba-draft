@@ -2,8 +2,15 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { PoolClient } from "pg";
 import { z as zod } from "zod";
 import { begin, database } from "./db";
-import { getCatalog } from "./espn";
-import { Member, Room, Settings, View, settingsSchema } from "./model";
+import { datasetPlayers, getCatalog } from "./espn";
+import {
+  Member,
+  Room,
+  Settings,
+  Unchanged,
+  View,
+  settingsSchema,
+} from "./model";
 import {
   eligible,
   matchRoster,
@@ -111,6 +118,22 @@ export function actorFor(room: Room, token: string | undefined) {
     : undefined;
 }
 
+// Rooms store the dataset id and metadata; players come from the shared dataset.
+// A room saved before migration still embeds its pool; it keeps that pool until
+// `npm run db:migrate` moves it into a dataset.
+function stored(room: Room) {
+  if (!room.catalog.dataset) return JSON.stringify(room);
+  const { players: _players, ...catalog } = room.catalog;
+  return JSON.stringify({ ...room, catalog });
+}
+async function withPlayers(room: Room, client?: PoolClient) {
+  if (room.catalog.dataset)
+    room.catalog = {
+      ...room.catalog,
+      players: await datasetPlayers(room.catalog.dataset, client),
+    };
+}
+
 export async function createRoom(
   name: string,
   commissioner: string,
@@ -147,7 +170,7 @@ export async function createRoom(
   room.members[0].activeAt = room.activeAt;
   await database().query("INSERT INTO nba_draft.rooms(id,data) VALUES($1,$2)", [
     room.id,
-    JSON.stringify(room),
+    stored(room),
   ]);
   return { room, token, recoveryCode };
 }
@@ -184,6 +207,41 @@ export function roomView(room: Room, token?: string, now = Date.now()): View {
     catalog,
     serverNow: now,
   };
+}
+
+// A poll is one unlocked read. Given the version the tab already shows, an unchanged
+// room returns only its clock fields. Only a due turn takes the lock to catch up.
+export async function pollRoom(
+  id: string,
+  token?: string,
+  since?: number,
+): Promise<View | Unchanged> {
+  if (!zod.string().uuid().safeParse(id).success)
+    throw new DraftError("Room not found.", 404);
+  const result = await database().query(
+    `SELECT CASE WHEN data->'version' = to_jsonb($2::bigint) THEN NULL ELSE data - 'ranking'::text END AS data,
+       data->>'phase' AS phase, (data->>'deadline')::bigint AS deadline,
+       (SELECT max((member->>'activeAt')::bigint) FROM jsonb_array_elements(data->'members') member
+        WHERE member->'commissioner' = 'true') AS "commissionerAt",
+       clock_timestamp() AS now
+     FROM nba_draft.rooms WHERE id=$1`,
+    [id, since ?? -1],
+  );
+  if (!result.rows.length) throw new DraftError("Room not found.", 404);
+  const row = result.rows[0],
+    now = new Date(row.now).getTime();
+  if (row.phase === "live" && row.deadline !== null && row.deadline <= now)
+    return (await transactRoom(id, token, undefined, false)).view;
+  if (!row.data)
+    return {
+      unchanged: true,
+      version: since!,
+      serverNow: now,
+      commissionerIdle:
+        row.commissionerAt === null ||
+        Number(row.commissionerAt) < now - commissionerIdleLimit,
+    };
+  return roomView({ ...row.data, ranking: [] }, token, now);
 }
 
 async function appendPick(
@@ -229,6 +287,12 @@ async function appendPick(
 }
 
 async function catchUp(client: PoolClient, room: Room, now: number) {
+  if (!(
+    room.phase === "live" &&
+    room.deadline !== null &&
+    room.deadline <= now
+  ))
+    return;
   const initialPickCount = room.picks.length;
   const players = new Map(
     room.catalog.players.map((player) => [player.id, player]),
@@ -290,47 +354,57 @@ function requireLobby(room: Room) {
     throw new DraftError("Settings and claims are locked after start.");
 }
 
+type Transacted = {
+  room: Room;
+  token?: string;
+  recoveryCode?: string;
+  view: View;
+};
 export async function transactRoom(
   id: string,
   token?: string,
   action?: Action,
-  withPlayers = true,
-) {
+  withCatalog = true,
+): Promise<Transacted> {
   if (!zod.string().uuid().safeParse(id).success)
     throw new DraftError("Room not found.", 404);
+  if (!action) {
+    // A poll is one unlocked read of the small room row. Only a due turn takes the lock.
+    const result = await database().query(
+      `SELECT ${withCatalog ? "data" : "data - 'ranking'::text AS data"}, clock_timestamp() AS now FROM nba_draft.rooms WHERE id=$1`,
+      [id],
+    );
+    if (!result.rows.length) throw new DraftError("Room not found.", 404);
+    const room = result.rows[0].data as Room,
+      now = new Date(result.rows[0].now).getTime();
+    if (!(
+      room.phase === "live" &&
+      room.deadline !== null &&
+      room.deadline <= now
+    )) {
+      room.ranking ??= [];
+      if (withCatalog) await withPlayers(room);
+      else room.catalog = { ...room.catalog, players: [] };
+      return { room, view: roomView(room, token, now) };
+    }
+  }
   const client = await begin();
   let issuedToken: string | undefined,
     recoveryCode: string | undefined,
     failure: DraftError | undefined;
   try {
     const result = await client.query(
-      "SELECT data - 'catalog'::text - 'ranking'::text AS data, (data->'catalog') - 'players'::text AS catalog FROM nba_draft.rooms WHERE id=$1 FOR UPDATE",
+      "SELECT data, clock_timestamp() AS now FROM nba_draft.rooms WHERE id=$1 FOR UPDATE",
       [id],
     );
     if (!result.rows.length) throw new DraftError("Room not found.", 404);
-    const room = {
-      ...result.rows[0].data,
-      catalog: { ...result.rows[0].catalog, players: [] },
-      ranking: [],
-    } as Room;
+    const room = result.rows[0].data as Room,
+      now = new Date(result.rows[0].now).getTime();
     const originalVersion = room.version;
-    const clock = await client.query("SELECT clock_timestamp() AS now");
-    const now = new Date(clock.rows[0].now).getTime();
-    // The frozen player pool is most of a room's bytes. Polls read it only when a turn is due.
-    const loaded =
-      withPlayers ||
-      action !== undefined ||
-      (room.phase === "live" && room.deadline !== null && room.deadline <= now);
-    if (loaded) {
-      const frozen = await client.query(
-        "SELECT data->'catalog'->'players' AS players, data->'ranking' AS ranking FROM nba_draft.rooms WHERE id=$1",
-        [id],
-      );
-      room.catalog.players = frozen.rows[0].players;
-      room.ranking = frozen.rows[0].ranking;
-    }
+    await withPlayers(room, client);
     await catchUp(client, room, now);
-    const settled = JSON.stringify(room);
+    const settled = stored(room),
+      settledPlayers = room.catalog.players;
     await client.query("SAVEPOINT command");
     let member = actorFor(room, token);
     try {
@@ -640,15 +714,14 @@ export async function transactRoom(
       if (!(error instanceof DraftError)) throw error;
       await client.query("ROLLBACK TO SAVEPOINT command");
       Object.assign(room, JSON.parse(settled));
+      room.catalog.players = settledPlayers;
       failure = error;
     }
     if (room.version !== originalVersion)
-      await client.query(
-        loaded
-          ? "UPDATE nba_draft.rooms SET data=$2 WHERE id=$1"
-          : "UPDATE nba_draft.rooms SET data = $2::jsonb || jsonb_build_object('catalog', data->'catalog', 'ranking', data->'ranking') WHERE id=$1",
-        [id, JSON.stringify(room)],
-      );
+      await client.query("UPDATE nba_draft.rooms SET data=$2 WHERE id=$1", [
+        id,
+        stored(room),
+      ]);
     await client.query("COMMIT");
     if (failure) throw failure;
     return {
@@ -704,13 +777,14 @@ export async function expireRooms(dryRun = false, limit = 100) {
         continue;
       }
       const version = room.version;
+      if (room.phase === "live") await withPlayers(room, client);
       await catchUp(client, room, now);
       if (room.phase === "live") {
         result.kept++;
         if (room.version !== version && !dryRun)
           await client.query("UPDATE nba_draft.rooms SET data=$2 WHERE id=$1", [
             id,
-            JSON.stringify(room),
+            stored(room),
           ]);
       } else {
         result.expired++;
