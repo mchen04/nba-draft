@@ -70,6 +70,15 @@ function compare(before: Awaited<ReturnType<typeof snapshot>>, after: Awaited<Re
   }));
 }
 
+function reportSnapshot(stage: string, capture: Awaited<ReturnType<typeof snapshot>>) {
+  const { schema, photoConstraints, ...summary } = capture.summary;
+  // Vercel limits each log entry. Keep counts and digests on a small entry.
+  report(stage, summary);
+  for (const table of new Set(schema.map((row) => row.table_name)))
+    report(`${stage}-schema`, { table, columns: schema.filter((row) => row.table_name === table) });
+  if (photoConstraints.length) report(`${stage}-photo-constraints`, photoConstraints);
+}
+
 async function run(script: string, args: string[] = []) {
   const output = await new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, ["--import", "tsx", `scripts/${script}.ts`, ...args], { stdio: ["ignore", "pipe", "pipe"] });
@@ -109,7 +118,7 @@ function sanitizedError(error: unknown) {
 
 async function main() {
   const before = await snapshot();
-  report("before", before.summary);
+  reportSnapshot("before", before);
   if (process.argv[2] === "inspect") {
     for (const id of process.argv.slice(3)) {
       assert.match(id, /^[0-9a-f-]{36}$/i);
@@ -126,15 +135,15 @@ async function main() {
   report("migration", { file: "db/003.sql", sha256: hash(sql) });
   await run("database", ["migrate", "003.sql"]);
   const migrated = await snapshot();
-  report("after-migration", migrated.summary);
+  reportSnapshot("after-migration", migrated);
   report("migration-record-changes", compare(before, migrated));
   let ingestion = await run("photos");
   for (let retry = 0; ingestion.failed && retry < 2; retry++) {
-    report("partial-ingestion", (await snapshot()).summary);
+    reportSnapshot("partial-ingestion", await snapshot());
     ingestion = await run("photos");
   }
   const ingested = await snapshot();
-  report("after-ingestion", ingested.summary);
+  reportSnapshot("after-ingestion", ingested);
   report("ingestion-record-changes", compare(migrated, ingested));
   assert.equal(ingestion.failed, 0, "Photo ingestion still has failed entries.");
   const reuse = await run("photos", ["--no-upstream"]);
@@ -145,7 +154,7 @@ async function main() {
   const repeated = await snapshot();
   assert.deepEqual(repeated.summary.tables.player_photos, ingested.summary.tables.player_photos);
   report("fresh-process-reuse", { ...reuse, unchangedPhotoFingerprint: true });
-  report("after-repeat", repeated.summary);
+  reportSnapshot("after-repeat", repeated);
   report("repeat-record-changes", compare(ingested, repeated));
 }
 
