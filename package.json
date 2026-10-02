@@ -8,7 +8,7 @@
     "start": "next start",
     "check": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
-    "test:db": "tsx --test --test-concurrency=1 tests/postgres.integration.ts",
+    "test:db": "tsx --test --test-concurrency=1 tests/postgres.integration.ts tests/photos.integration.ts",
     "db:inspect": "tsx scripts/database.ts inspect",
     "db:migrate": "tsx scripts/database.ts migrate"
   },

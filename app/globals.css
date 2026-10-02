@@ -509,7 +509,8 @@ code {
   gap: var(--gap);
   position: relative;
 }
-.workspace > .panel {
+.workspace > .panel,
+.workspace > .activity-panel {
   grid-area: 1 / 1;
 }
 .workspace > [data-hidden] {
@@ -622,7 +623,8 @@ button.item small {
 }
 .queue-toggle {
   flex: none;
-  width: 34px;
+  width: 78px;
+  font-size: 10px;
   min-height: 34px;
   padding: 0;
   font-weight: 700;
@@ -645,13 +647,15 @@ tr.taken {
 
 /* Queue and roster */
 .queue-list,
-.roster-list {
+.roster-list,
+.recent-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 .queue-list li,
-.roster-list li {
+.roster-list li,
+.recent-list li {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -710,14 +714,6 @@ tr.taken {
   color: var(--muted);
   font-size: 13px;
   padding-left: 4px;
-}
-.totals {
-  padding: 6px 8px;
-}
-.totals summary {
-  cursor: pointer;
-  min-height: 32px;
-  font-weight: 600;
 }
 .stat-pair {
   display: flex;
@@ -965,6 +961,14 @@ tr.taken {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.draft-button > span:first-child {
+  flex: none;
+}
+.draft-button .action-player {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .create .draft-button {
   flex: 1;
   max-width: none;
@@ -984,6 +988,32 @@ tr.taken {
   pointer-events: none;
 }
 
+/* Queue and shared picks use equal space at every size. */
+.activity-panel {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gap);
+}
+.avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #eef1f5;
+  color: var(--muted);
+  font-size: 11px;
+}
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 /* Tablet and desktop */
 @media (min-width: 900px) {
   :root {
@@ -991,35 +1021,27 @@ tr.taken {
   }
   .workspace {
     grid-template-columns: minmax(0, 1fr) 300px;
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   }
   .workspace > .players-panel,
   .workspace > .board-panel,
-  .workspace > .lobby-panel {
-    grid-area: 1 / 1 / 3 / 2;
-  }
-  .workspace > .queue-panel,
+  .workspace > .lobby-panel,
   .workspace > .roster-panel {
+    grid-area: 1 / 1;
+  }
+  .workspace > .activity-panel {
+    grid-area: 1 / 2;
     visibility: visible;
     pointer-events: auto;
   }
-  .workspace > .queue-panel {
-    grid-area: 1 / 2;
-  }
-  .workspace > .roster-panel {
-    grid-area: 2 / 2;
-  }
   .workspace > .sheet {
-    grid-area: 1 / 1 / 3 / 3;
+    grid-area: 1 / 1 / 2 / 3;
     justify-self: center;
     width: min(760px, 100%);
   }
-  .tabs .tab-queue,
-  .tabs .tab-roster {
+  .tabs .tab-queue {
     display: none;
   }
-  .workspace.view-queue > .players-panel,
-  .workspace.view-roster > .players-panel {
+  .workspace.view-queue > .players-panel {
     visibility: visible;
     pointer-events: auto;
   }
@@ -1035,25 +1057,9 @@ tr.taken {
   .pick-strip li {
     flex: 1 0 140px;
   }
-}
-@media (min-width: 1300px) {
-  .workspace {
-    grid-template-columns: 260px minmax(0, 1fr) 300px;
-    grid-template-rows: minmax(0, 1fr);
-  }
-  .workspace > .players-panel,
-  .workspace > .board-panel,
-  .workspace > .lobby-panel {
-    grid-area: 1 / 2;
-  }
-  .workspace > .queue-panel {
-    grid-area: 1 / 1;
-  }
-  .workspace > .roster-panel {
-    grid-area: 1 / 3;
-  }
-  .workspace > .sheet {
-    grid-area: 1 / 1 / 2 / 4;
+  .player-table th:nth-child(2),
+  .player-table td:nth-child(2) {
+    max-width: 300px;
   }
 }
 @media (max-width: 899px) {
@@ -1075,7 +1081,7 @@ tr.taken {
 @media (max-width: 420px) {
   .player-table th:nth-child(2),
   .player-table td:nth-child(2) {
-    max-width: 170px;
+    max-width: 240px;
   }
   .data-badge:not(.stale) {
     display: none;

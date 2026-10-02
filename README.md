@@ -78,7 +78,9 @@ If the commissioner makes no action for 15 minutes, any manager can take over fr
 
 The room always fits one screen. Lists, the board, and menus scroll inside their own panels.
 On phones, the tabs switch between Lobby, Players, Queue, Roster, and Board.
-On wider screens, the queue and roster stay beside the player list.
+On wider screens, Your Queue sits above Recently Drafted beside the player list.
+Each half scrolls on its own. The shared feed shows the latest 20 picks.
+On phones, Queue opens both halves. Roster opens from its own tab.
 Each panel keeps its filters, selection, and scroll position when you switch views.
 
 Open the invite address, choose an open team, enter your name, and join.
@@ -103,10 +105,15 @@ The home page also opens a room from a pasted invite link or room ID.
 The list stores room names and team labels only, never codes or cookies.
 
 Search players, filter by position, and open “More” for NBA team, stat mode, and sort.
-Tap a name to select a player. Press the button with that player's name to draft.
+Tap + DRAFT during your turn to draft a player at once.
+Off-turn, the same button reads + QUEUE and adds to your private queue.
+Tap a name to select a player. The bottom button uses the same action.
 Selection alone never drafts a player.
 Tap the selected player at the bottom for full projections.
-Use + beside a player to queue. Use ↑ and ↓ in Queue to reorder.
+Roster names open full projections directly. Drafted players do not stay in the bottom selection.
+The top strip shows upcoming picks only. The board and exports keep the full pick history.
+Queued players show ✓ QUEUED off-turn. Remove them with × in Your Queue.
+Use ↑ and ↓ in Your Queue to reorder.
 Queue choices skip drafted players and players that cannot fit your roster.
 The tab bar shows your open roster slots.
 
@@ -187,6 +194,30 @@ Live drafts keep their dataset, so a refresh or an ESPN outage never changes a d
 Weekly checks suit season projections and positions.
 Injury status and NBA team can change daily, so they may lag by up to a week. A lobby refresh picks up the latest values.
 
+## Player photos
+
+Run the additive `db/003.sql` migration before publishing the photo route.
+It creates `nba_draft.player_photos`. It changes no room, pick, or dataset.
+
+```sh
+node --env-file=/private/path/neon.env --import tsx scripts/database.ts migrate
+node --env-file=/private/path/neon.env --import tsx scripts/photos.ts
+```
+
+The ingestion script reads every stored dataset and saves each player's image bytes once.
+It requests small profile thumbnails and saves PNG or JPEG bytes in Postgres.
+Each record has a MIME type, SHA-256, and ingestion time.
+A missing upstream image gets a stored missing marker. Temporary failures remain retryable.
+Run the script again after a failure. Cached and missing entries cause no upstream request.
+Jobs use per-player database locks to prevent duplicate downloads.
+The existing weekly catalog job also ingests new players within a bounded time budget.
+
+All photos load from `/api/photos/{playerId}`. Page reads never fetch upstream photos.
+Cached images and missing markers have one-year browser and CDN cache headers.
+Players awaiting ingestion use an uncached placeholder, so later ingestion can appear.
+Database failures also show a placeholder. Browser image failures show the player's initials.
+Player lists, queues, recent picks, and rosters use this route. The board stays text-only.
+
 ## Scheduled jobs
 
 `vercel.json` registers two jobs. Both require `CRON_SECRET`; Vercel sends it as a bearer token.
@@ -212,6 +243,7 @@ Without the secret, the route returns 503 and deletes nothing.
 `?dryRun=1` reports counts without changes.
 
 Catch-up limits:
+
 - A room can outlive seven days by up to one day, because the job runs daily.
 - One run deletes at most 100 rooms. A larger backlog clears over the next days.
 - Vercel does not replay a missed run. The next daily run catches up.
@@ -245,6 +277,7 @@ The expiry test refuses to sweep if any unrelated room is already past seven day
 The outage test uses the 2025 cache row, which the app never offers.
 Browser acceptance drives a complete three-manager draft on phone, tablet, and desktop sizes.
 The rooms script switches one browser between two rooms and checks keyboard use, control names, errors, and scroll retention.
+The avatar/queue script checks two managers, both action modes, shared picks, private queues, photo loads, mobile layout, and reconnect.
 The hosted script is bounded for a live deployment: one room, three sessions, three picks, reload, offline reconnect, and recovery on a third device. It pauses the room at the end.
 It records document and panel scroll sizes for every screen and fails on any document scroll.
 Open every screenshot before claiming visual proof.
