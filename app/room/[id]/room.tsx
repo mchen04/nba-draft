@@ -98,12 +98,15 @@ export default function DraftRoom({ id }: { id: string }) {
   const [retry, setRetry] = useState<{ body: string; label: string } | null>(
     null,
   );
+  // Reconnect bumps this so a failed player-data load runs again.
+  const [catalogAttempt, setCatalogAttempt] = useState(0);
   const [otherRooms, setOtherRooms] = useState<RecentRoom[]>([]);
   const fetching = useRef(false),
     latestVersion = useRef(-1),
+    latestViewer = useRef(-1),
     readGeneration = useRef(0),
     sortInitialized = useRef(false),
-    catalogLoading = useRef<number | null>(null);
+    catalogLoading = useRef<string | null>(null);
   const pendingAction = useRef<AbortController | null>(null),
     menuRef = useRef<HTMLDetailsElement | null>(null);
   const accept = useCallback((view: View | Unchanged) => {
@@ -116,6 +119,7 @@ export default function DraftRoom({ id }: { id: string }) {
       );
     else if (view.version >= latestVersion.current) {
       latestVersion.current = view.version;
+      latestViewer.current = view.viewer;
       setRoom(view);
     }
     setOffset(view.serverNow - Date.now());
@@ -126,9 +130,11 @@ export default function DraftRoom({ id }: { id: string }) {
     fetching.current = true;
     const generation = readGeneration.current;
     try {
-      // The server answers "unchanged" when the room still has this version.
+      // The server answers "unchanged" when the room still has this version and viewer.
       const since =
-        latestVersion.current >= 0 ? `?since=${latestVersion.current}` : "";
+        latestVersion.current >= 0
+          ? `?since=${latestVersion.current}&viewer=${latestViewer.current}`
+          : "";
       const response = await fetch(`/api/rooms/${id}${since}`, {
         cache: "no-store",
         signal: AbortSignal.timeout(15000),
@@ -143,13 +149,13 @@ export default function DraftRoom({ id }: { id: string }) {
       fetching.current = false;
     }
   }, [id, accept]);
-  // Player data is immutable per dataset id, so the browser and CDN cache it.
-  // A room saved before migration (no dataset id) still serves its own pool.
+  // The player-data URL names the pool's digest, so the browser and CDN cache it.
+  // A room saved before migration (no digest) still serves its own pool.
   const loadCatalog = useCallback(
-    async (dataset: number | undefined) => {
+    async (path: string | undefined) => {
       const response = await fetch(
-        dataset ? `/api/catalog/${dataset}` : `/api/rooms/${id}?catalog=1`,
-        dataset
+        path ?? `/api/rooms/${id}?catalog=1`,
+        path
           ? { signal: AbortSignal.timeout(30000) }
           : { cache: "no-store", signal: AbortSignal.timeout(30000) },
       );
@@ -207,19 +213,24 @@ export default function DraftRoom({ id }: { id: string }) {
   }, [id, roomName, myLabel]);
   useEffect(() => {
     if (!room) return;
-    const dataset = room.catalog.dataset ?? 0;
+    const { dataset, digest = "" } = room.catalog;
     if (
-      (catalog && (catalog.dataset ?? 0) === dataset) ||
-      catalogLoading.current === dataset
+      (catalog && (catalog.digest ?? "") === digest) ||
+      catalogLoading.current === digest
     )
       return;
-    catalogLoading.current = dataset;
-    loadCatalog(dataset || undefined)
+    catalogLoading.current = digest;
+    loadCatalog(digest ? `/api/catalog/${dataset}/${digest}` : undefined)
       .catch((failure) => setError(failure.message))
       .finally(() => {
-        if (catalogLoading.current === dataset) catalogLoading.current = null;
+        if (catalogLoading.current === digest) catalogLoading.current = null;
       });
-  }, [room, catalog, loadCatalog]);
+  }, [room, catalog, loadCatalog, catalogAttempt]);
+  const reconnect = () => {
+    setError("");
+    setCatalogAttempt((attempt) => attempt + 1);
+    load();
+  };
   async function send(command: Command, label = "Saved", savedBody?: string) {
     if (busy) return;
     setBusy(true);
@@ -423,14 +434,7 @@ export default function DraftRoom({ id }: { id: string }) {
               : "Connecting to the saved draft…")}
         </p>
         <div className="row">
-          <button
-            onClick={() => {
-              setError("");
-              load();
-            }}
-          >
-            Reconnect
-          </button>
+          <button onClick={reconnect}>Reconnect</button>
           <a className="button" href="/">
             New room
           </a>
@@ -1217,7 +1221,7 @@ export default function DraftRoom({ id }: { id: string }) {
         <span>
           Offline · picks paused on this device. The server clock continues.
         </span>
-        <button onClick={load}>Reconnect</button>
+        <button onClick={reconnect}>Reconnect</button>
       </div>
     ),
     error && (

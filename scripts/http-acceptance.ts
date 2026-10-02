@@ -135,13 +135,25 @@ async function main() {
     400,
   );
   const view = (await request(path)).data;
-  const catalogPath = `/api/catalog/${view.catalog.dataset}`;
+  const catalogPath = `/api/catalog/${view.catalog.dataset}/${view.catalog.digest}`;
   const shared = await request(catalogPath);
-  check("shared player data loads by dataset", shared, 200);
-  assert.match(shared.response.headers.get("Cache-Control") ?? "", /immutable/);
+  check("shared player data loads by dataset digest", shared, 200);
+  for (const header of ["Cache-Control", "CDN-Cache-Control"])
+    assert.equal(
+      shared.response.headers.get(header),
+      "public, max-age=31536000, immutable",
+    );
+  assert.equal(shared.data.digest, view.catalog.digest);
+  // A reissued id with other players has another digest, so it never matches a cached URL.
+  const reissued = await request(
+    `/api/catalog/${view.catalog.dataset}/${"0".repeat(64)}`,
+  );
+  check("same id with another digest is not found", reissued, 404);
+  assert.equal(reissued.response.headers.get("Cache-Control"), "no-store");
+  assert.equal(reissued.response.headers.get("CDN-Cache-Control"), null);
   check(
     "unknown dataset is not found",
-    await request("/api/catalog/999999999"),
+    await request(`/api/catalog/999999999/${view.catalog.digest}`),
     404,
   );
   const pool = shared.data;

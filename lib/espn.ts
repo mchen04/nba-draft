@@ -260,13 +260,14 @@ export async function datasetCatalog(id: number, client?: PoolClient) {
   const cached = datasets.get(id);
   if (cached) return cached;
   const result = await (client ?? database()).query(
-    "SELECT meta, players FROM nba_draft.datasets WHERE id=$1",
+    "SELECT digest, meta, players FROM nba_draft.datasets WHERE id=$1",
     [id],
   );
   if (!result.rows.length) return null;
   const catalog: Catalog = {
     ...result.rows[0].meta,
     dataset: id,
+    digest: result.rows[0].digest,
     players: result.rows[0].players,
   };
   remember(catalog);
@@ -314,7 +315,7 @@ async function readCatalog(
     [season],
   );
   const result = await client.query(
-    "SELECT c.dataset_id, c.attempted_at, c.checked_at, c.error, d.meta FROM nba_draft.catalogs c LEFT JOIN nba_draft.datasets d ON d.id = c.dataset_id WHERE c.season=$1 FOR UPDATE OF c",
+    "SELECT c.dataset_id, c.attempted_at, c.checked_at, c.error, d.digest, d.meta FROM nba_draft.catalogs c LEFT JOIN nba_draft.datasets d ON d.id = c.dataset_id WHERE c.season=$1 FOR UPDATE OF c",
     [season],
   );
   const cached = result.rows[0];
@@ -322,6 +323,7 @@ async function readCatalog(
     ? {
         ...cached.meta,
         dataset: Number(cached.dataset_id),
+        digest: cached.digest,
         checkedAt: cached.checked_at?.toISOString(),
       }
     : null;
@@ -367,9 +369,9 @@ async function readCatalog(
     `WITH inserted AS (
        INSERT INTO nba_draft.datasets(season, digest, meta, players)
        VALUES($1, nba_draft.dataset_digest($1, $2, $4::jsonb), $3, $4)
-       ON CONFLICT (digest) DO NOTHING RETURNING id, meta)
-     SELECT id, meta FROM inserted
-     UNION ALL SELECT id, meta FROM nba_draft.datasets WHERE digest = nba_draft.dataset_digest($1, $2, $4::jsonb)
+       ON CONFLICT (digest) DO NOTHING RETURNING id, digest, meta)
+     SELECT id, digest, meta FROM inserted
+     UNION ALL SELECT id, digest, meta FROM nba_draft.datasets WHERE digest = nba_draft.dataset_digest($1, $2, $4::jsonb)
      LIMIT 1`,
     [season, fresh.mapping, JSON.stringify(fresh), JSON.stringify(pool)],
   );
@@ -381,6 +383,7 @@ async function readCatalog(
   const catalog: Catalog = {
     ...stored.rows[0].meta,
     dataset: id,
+    digest: stored.rows[0].digest,
     players: pool,
   };
   remember(catalog);

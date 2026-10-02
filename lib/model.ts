@@ -70,6 +70,8 @@ export type Source = {
 // One shared, immutable player dataset version. Rooms store everything except `players`.
 export type Catalog = {
   dataset: number;
+  // sha256 of the pool; part of the cached URL, so a reissued id cannot serve stale players.
+  digest?: string;
   season: number;
   mapping?: number;
   fetchedAt: string;
@@ -244,6 +246,7 @@ export type View = Omit<Room, "members" | "catalog" | "ranking"> & {
   }[];
   commissionerIdle: boolean;
   me: { slot: number | null; commissioner: boolean; ready: boolean } | null;
+  viewer: number;
   queue: number[];
   catalog: CatalogMeta;
   serverNow: number;

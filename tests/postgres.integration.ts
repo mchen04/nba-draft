@@ -963,7 +963,7 @@ test("migration moves a legacy embedded pool into a shared dataset without touch
     }),
   );
   const { players, ...meta } = room.catalog;
-  const { dataset: _dataset, ...legacy } = meta;
+  const { dataset: _dataset, digest, ...legacy } = meta;
   await database().query(
     "UPDATE nba_draft.rooms SET data = jsonb_set(data, '{catalog}', $2::jsonb) WHERE id=$1",
     [room.id, JSON.stringify({ ...legacy, players })],
@@ -1003,8 +1003,38 @@ test("migration moves a legacy embedded pool into a shared dataset without touch
   assert.equal(await datasets(), count, "identical pool reuses its dataset");
   const migrated = await transactRoom(room.id, token);
   assert.equal(migrated.room.catalog.dataset, room.catalog.dataset);
+  assert.equal(migrated.room.catalog.digest, digest);
   assert.deepEqual(migrated.room.catalog.players, players);
   assert.equal(migrated.room.picks.length, 1);
+
+  // Rolling back past this release first copies pools back; a later migrate strips them again.
+  const client = await database().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      readFileSync(
+        new URL("../scripts/restore-embedded-pools.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    const restored = await client.query(
+      "SELECT data->'catalog'->'players' AS players, (SELECT count(*)::int FROM nba_draft.catalogs WHERE dataset_id IS NOT NULL AND NOT snapshot ? 'players') AS bare FROM nba_draft.rooms WHERE id=$1",
+      [room.id],
+    );
+    assert.deepEqual(restored.rows[0].players, players);
+    assert.equal(restored.rows[0].bare, 0);
+    await client.query(
+      readFileSync(new URL("../db/002.sql", import.meta.url), "utf8"),
+    );
+    const stripped = await client.query(
+      "SELECT data->'catalog' ? 'players' AS embedded, data->'catalog'->>'digest' AS digest FROM nba_draft.rooms WHERE id=$1",
+      [room.id],
+    );
+    assert.deepEqual(stripped.rows[0], { embedded: false, digest });
+  } finally {
+    await client.query("ROLLBACK");
+    client.release();
+  }
 });
 
 test("a poll with the shown version gets only clock fields until the room changes", async () => {
@@ -1020,7 +1050,7 @@ test("a poll with the shown version gets only clock fields until the room change
   } as typeof query;
   let same;
   try {
-    same = await pollRoom(room.id, token, first.version);
+    same = await pollRoom(room.id, token, first.version, first.viewer);
   } finally {
     Client.prototype.query = query;
   }
@@ -1034,13 +1064,29 @@ test("a poll with the shown version gets only clock fields until the room change
   assert.equal(same.version, first.version);
   assert.equal(same.commissionerIdle, first.commissionerIdle);
 
+  // Another cookie at the same version is a different viewer, so it gets the full view.
+  const switched = await pollRoom(
+    room.id,
+    secondToken,
+    first.version,
+    first.viewer,
+  );
+  assert.ok(!("unchanged" in switched));
+  assert.notEqual(switched.viewer, first.viewer);
+  assert.equal(switched.me?.slot, 1);
+
   const ranked = (await transactRoom(room.id, token)).room.ranking;
   await transactRoom(
     room.id,
     token,
     command("pick", { playerId: ranked[0], expectedIndex: 0 }),
   );
-  const changed = await pollRoom(room.id, secondToken, first.version);
+  const changed = await pollRoom(
+    room.id,
+    secondToken,
+    first.version,
+    switched.viewer,
+  );
   assert.ok(!("unchanged" in changed));
   assert.equal(changed.picks.length, 1);
   assert.equal(changed.me?.slot, 1);
@@ -1049,7 +1095,7 @@ test("a poll with the shown version gets only clock fields until the room change
     "UPDATE nba_draft.rooms SET data=jsonb_set(data,'{deadline}',to_jsonb((extract(epoch FROM clock_timestamp())*1000-1000)::bigint)) WHERE id=$1",
     [room.id],
   );
-  const due = await pollRoom(room.id, token, changed.version);
+  const due = await pollRoom(room.id, token, changed.version, first.viewer);
   assert.ok(!("unchanged" in due));
   assert.equal(due.picks.length, 2);
   assert.equal(due.picks[1].source, "ranking");

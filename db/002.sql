@@ -39,3 +39,10 @@ SET data = jsonb_set(r.data, '{catalog}', ((r.data->'catalog') - 'players') || j
 FROM nba_draft.datasets d
 WHERE r.data->'catalog' ? 'players'
   AND d.digest = nba_draft.dataset_digest((r.data->'catalog'->>'season')::int, (r.data->'catalog'->>'mapping')::int, r.data->'catalog'->'players');
+
+-- Rooms also keep the dataset digest, which the browser's cached player URL includes.
+UPDATE nba_draft.rooms r
+SET data = jsonb_set(r.data, '{catalog,digest}', to_jsonb(d.digest))
+FROM nba_draft.datasets d
+WHERE r.data->'catalog' ? 'dataset' AND NOT r.data->'catalog' ? 'digest'
+  AND d.id = (r.data->'catalog'->>'dataset')::bigint;

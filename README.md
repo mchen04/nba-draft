@@ -171,7 +171,7 @@ Counting rates use season totals divided by projected games.
 Each validated ESPN pool is stored once in `nba_draft.datasets` and never changes.
 Its metadata records the source URL, the player count ESPN reported and returned, season, mapping version, and retrieval time.
 Rooms store only the dataset id and its metadata, not the players.
-Browsers load players from `/api/catalog/{id}`. The response is immutable, so browsers and the CDN cache it.
+Browsers load players from `/api/catalog/{id}/{digest}`. The digest is the pool's sha256, so the URL names its content. The response sends `Cache-Control` and `CDN-Cache-Control` as `public, max-age=31536000, immutable`, so browsers and the Vercel CDN keep it for a year. A wrong digest returns an uncached 404.
 Each server instance also keeps the last few datasets in memory.
 
 The current dataset is checked against ESPN once a week: by the weekly cron job, or by the first room creation after a week.
@@ -259,11 +259,21 @@ The live app deploys from `main` through the connected Vercel project.
 3. Push a branch, open a PR, and merge after checks. Vercel builds `main` and registers the cron job from `vercel.json`.
 4. Confirm the production deployment matches the merged commit.
 5. Run browser acceptance against the deployment and inspect fresh screenshots.
-6. Confirm the cron jobs in the Vercel project settings, then read their logs.
+6. Turn on the project's Cron Jobs only after this release serves production. Older releases run expiry without the `ROOM_EXPIRY` guard.
+   - Confirm production has no `ROOM_EXPIRY`, or a value other than `on`.
+   - Call `/api/cron/expire?dryRun=1` with `Authorization: Bearer $CRON_SECRET`. It must answer `{"paused":true,"expired":0}`.
+   - Then turn on Cron Jobs, call `/api/cron/catalog` the same way once, and read both jobs' logs.
 
 This release adds `db/002.sql`, which moves player pools out of rooms into shared datasets.
-Run `scripts/database.ts migrate` with the direct connection before the deploy, and again after it.
-The second run converts any room an older deployment saved in between. Until then such a room keeps working on its own embedded pool.
+Older code cannot read a migrated room: every action on it fails until this release serves it.
+So never run the migration while an older deployment still serves the same database.
+
+- **Existing database:** deploy first, then run `scripts/database.ts migrate` with the direct connection at once. In between, existing rooms keep working on their embedded pools. Only room creation and player-data refresh fail until the migration runs.
+- **New, empty database:** migrate it first. Then switch `DATABASE_URL` to it and redeploy this release in the same step. An older deployment must never point at it.
+
+Rolling back past this release breaks every migrated room.
+Before such a rollback, run `scripts/restore-embedded-pools.sql` in one transaction (the command is in the file).
+It copies each pool back into its rooms and the season cache. A later `migrate` strips the copies again.
 Do not print connection values or put them in URLs, screenshots, source, or client bundles.
 Do not buy services or change unrelated infrastructure.
 

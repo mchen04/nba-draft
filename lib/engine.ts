@@ -203,29 +203,35 @@ export function roomView(room: Room, token?: string, now = Date.now()): View {
           ready: actor.ready,
         }
       : null,
+    // A cookie can change without a version bump, so polls also compare the viewer.
+    viewer: actor ? room.members.indexOf(actor) : -1,
     queue: actor?.queue ?? [],
     catalog,
     serverNow: now,
   };
 }
 
-// A poll is one unlocked read. Given the version the tab already shows, an unchanged
-// room returns only its clock fields. Only a due turn takes the lock to catch up.
+// A poll is one unlocked read. Given the version and viewer the tab already shows, an
+// unchanged room returns only its clock fields. Only a due turn takes the lock to catch up.
 export async function pollRoom(
   id: string,
   token?: string,
   since?: number,
+  viewer = -1,
 ): Promise<View | Unchanged> {
   if (!zod.string().uuid().safeParse(id).success)
     throw new DraftError("Room not found.", 404);
   const result = await database().query(
-    `SELECT CASE WHEN data->'version' = to_jsonb($2::bigint) THEN NULL ELSE data - 'ranking'::text END AS data,
+    `SELECT CASE WHEN data->'version' = to_jsonb($2::bigint) AND $3::int = coalesce(
+         (SELECT ord - 1 FROM jsonb_array_elements(data->'members') WITH ORDINALITY m(member, ord)
+          WHERE member->'sessions' ? $4 LIMIT 1), -1)
+       THEN NULL ELSE data - 'ranking'::text END AS data,
        data->>'phase' AS phase, (data->>'deadline')::bigint AS deadline,
        (SELECT max((member->>'activeAt')::bigint) FROM jsonb_array_elements(data->'members') member
         WHERE member->'commissioner' = 'true') AS "commissionerAt",
        clock_timestamp() AS now
      FROM nba_draft.rooms WHERE id=$1`,
-    [id, since ?? -1],
+    [id, since ?? -1, viewer, token ? hash(token) : null],
   );
   if (!result.rows.length) throw new DraftError("Room not found.", 404);
   const row = result.rows[0],

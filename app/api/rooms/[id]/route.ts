@@ -12,12 +12,14 @@ export async function GET(request: NextRequest, context: Context) {
     // Tabs loaded before shared datasets still ask for players here.
     if (request.nextUrl.searchParams.get("catalog") === "1")
       return json((await transactRoom(id, token)).room.catalog);
-    const since = request.nextUrl.searchParams.get("since");
+    const since = request.nextUrl.searchParams.get("since"),
+      viewer = request.nextUrl.searchParams.get("viewer");
     return json(
       await pollRoom(
         id,
         token,
         since && /^[0-9]{1,9}$/.test(since) ? Number(since) : undefined,
+        viewer && /^(-1|[0-9]{1,3})$/.test(viewer) ? Number(viewer) : -1,
       ),
     );
   } catch (error) {
