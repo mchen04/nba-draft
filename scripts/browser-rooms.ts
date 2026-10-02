@@ -375,7 +375,7 @@ evaluate(
   "document.querySelector('.player-table tbody tr:not(.taken) button.item').focus(); return true;",
 );
 cli(Q, ["press", "Enter"]);
-waitFor(Q, "keyboard select", () => !!find(Q, "button", /^Draft .+/, false));
+waitFor(Q, "keyboard select", () => !!find(Q, "button", /^\+ QUEUE .+/, false));
 evaluate(Q, "document.querySelector('.draft-button').focus(); return true;");
 cli(Q, ["press", "Enter"]);
 waitFor(Q, "keyboard pick", () => state(Q).picks.length === before + 1);

@@ -19,9 +19,13 @@ async function main() {
         await client.query("BEGIN");
         await client.query("SELECT pg_advisory_xact_lock(67823411)");
         const folder = new URL("../db/", import.meta.url);
-        for (const file of (await readdir(folder))
+        const files = (await readdir(folder))
           .filter((name) => name.endsWith(".sql"))
-          .sort())
+          .sort();
+        const selected = process.argv[3];
+        if (selected && !files.includes(selected))
+          throw new Error("Unknown migration file.");
+        for (const file of selected ? [selected] : files)
           await client.query(await readFile(new URL(file, folder), "utf8"));
         await client.query("COMMIT");
         console.log("Namespaced migration complete.");

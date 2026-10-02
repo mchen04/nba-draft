@@ -92,24 +92,25 @@ function draft(session: string) {
   );
   return name;
 }
-// Saved picks must appear as numbered pick-strip entries ("Pick N, manager, player").
+// Saved picks must appear in the shared feed ("View pick N, manager, player").
 // Page text is not enough: undrafted players are listed by name too.
 function strip(session: string): string[] {
   return evaluate(
     session,
-    "return [...document.querySelectorAll('.pick-strip [aria-label^=\"Pick \"]')].map(b => b.getAttribute('aria-label'))",
+    "return [...document.querySelectorAll('.recent-list [aria-label^=\"View pick \"]')].map(b => b.getAttribute('aria-label'))",
   );
 }
 const savedInStrip = (labels: string[], names: string[]) =>
   names.every((name, i) =>
     labels.some(
-      (label) => label.startsWith(`Pick ${i + 1},`) && label.endsWith(`, ${name}`),
+      (label) =>
+        label.startsWith(`View pick ${i + 1},`) && label.endsWith(`, ${name}`),
     ),
   );
 function shows(session: string, names: string[], label: string) {
   waitFor(
     session,
-    `${label} pick strip shows ${names.map((name, i) => `${i + 1}. ${name}`).join(", ")}`,
+    `${label} recent feed shows ${names.map((name, i) => `${i + 1}. ${name}`).join(", ")}`,
     () => savedInStrip(strip(session), names),
     30000,
   );

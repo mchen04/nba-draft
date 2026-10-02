@@ -8,7 +8,6 @@ import {
   Stat,
   Unchanged,
   View,
-  categoryStats,
   slots,
   statIds,
 } from "@/lib/model";
@@ -16,10 +15,10 @@ import {
   matchRoster,
   pickOrder,
   rankPlayers,
-  rosterProjection,
   rosterSlots,
   value,
 } from "@/lib/rules";
+import { Avatar } from "@/app/components/avatar";
 import { SettingsEditor } from "@/app/components/settings";
 import {
   RecentRoom,
@@ -464,6 +463,7 @@ export default function DraftRoom({ id }: { id: string }) {
   const fits =
     !!selected &&
     matchRoster([...pickingPlayers, selected], configured) !== null;
+  const draftMode = room.phase === "live" && (myTurn || acting);
   const canPick =
     room.phase === "live" &&
     (myTurn || acting) &&
@@ -473,6 +473,36 @@ export default function DraftRoom({ id }: { id: string }) {
     connected &&
     !busy &&
     !retry;
+  const canQueue =
+    mySlot !== null &&
+    room.phase !== "complete" &&
+    !!selected &&
+    !drafted.has(selected.id) &&
+    !room.queue.includes(selected.id) &&
+    room.queue.length < 100 &&
+    connected &&
+    !busy &&
+    !retry;
+  const activeSelection =
+    selected && !drafted.has(selected.id) ? selected : null;
+  function actOnPlayer(player: Player) {
+    if (draftMode) {
+      send(
+        {
+          type: "pick",
+          playerId: player.id,
+          expectedIndex: currentIndex,
+          forTeam: !!acting,
+        },
+        `${player.name} drafted`,
+      );
+    } else {
+      send(
+        { type: "queue", players: [...room!.queue, player.id] },
+        `${player.name} queued`,
+      );
+    }
+  }
   const columns: (Stat | "FP")[] =
     room.settings.scoring === "points"
       ? ["FP", "PTS", "REB", "AST", "STL", "BLK", "3PM", "TO", "GP"]
@@ -655,13 +685,9 @@ export default function DraftRoom({ id }: { id: string }) {
     </section>
   );
   const queuePanel = (
-    <section
-      className="panel queue-panel"
-      aria-label="My queue"
-      data-hidden={view !== "Queue" || undefined}
-    >
+    <section className="panel queue-panel" aria-label="Your Queue">
       <div className="panel-bar">
-        <strong>Queue</strong>
+        <strong>Your Queue</strong>
         <span>{availableQueue.length} available</span>
       </div>
       <div className="scroll">
@@ -684,6 +710,7 @@ export default function DraftRoom({ id }: { id: string }) {
                       : ""
                 }
               >
+                <Avatar player={player} />
                 <button
                   className="item"
                   onClick={() => setSelectedId(player.id)}
@@ -759,15 +786,21 @@ export default function DraftRoom({ id }: { id: string }) {
               <li key={index}>
                 <span className={`position pos-${slot}`}>{slot}</span>
                 {player ? (
-                  <button
-                    className="item"
-                    onClick={() => setSelectedId(player.id)}
-                  >
-                    <strong>{player.name}</strong>
-                    <small>
-                      {player.team} · {positionsOf(player)}
-                    </small>
-                  </button>
+                  <>
+                    <Avatar player={player} />
+                    <button
+                      className="item"
+                      onClick={() => {
+                        setSelectedId(player.id);
+                        setDetails(true);
+                      }}
+                    >
+                      <strong>{player.name}</strong>
+                      <small>
+                        {player.team} · {positionsOf(player)}
+                      </small>
+                    </button>
+                  </>
                 ) : (
                   <span className="open-slot">Open</span>
                 )}
@@ -775,23 +808,6 @@ export default function DraftRoom({ id }: { id: string }) {
             );
           })}
         </ul>
-        <details className="totals">
-          <summary>Projected totals</summary>
-          {categoryStats.map((stat) => {
-            const total = rosterProjection(rosterPlayers, stat);
-            return (
-              <div className="stat-pair" key={stat}>
-                <span>{stat}</span>
-                <span>
-                  {format(total.value, stat)}{" "}
-                  <small>
-                    {total.coverage}/{total.total}
-                  </small>
-                </span>
-              </div>
-            );
-          })}
-        </details>
       </div>
     </section>
   );
@@ -937,18 +953,31 @@ export default function DraftRoom({ id }: { id: string }) {
                     <div className="name-cell">
                       <button
                         className="queue-toggle"
-                        aria-label={`${queued ? "Remove" : "Queue"} ${player.name}`}
-                        aria-pressed={queued}
+                        aria-label={`${draftMode ? "Draft" : queued ? "Queued" : "Queue"} ${player.name}`}
+                        aria-pressed={!draftMode && queued}
                         disabled={
-                          mySlot === null ||
+                          (mySlot === null && !acting) ||
                           busy ||
                           !connected ||
-                          drafted.has(player.id)
+                          !!retry ||
+                          drafted.has(player.id) ||
+                          room.phase === "complete" ||
+                          (draftMode
+                            ? matchRoster(
+                                [...pickingPlayers, player],
+                                configured,
+                              ) === null
+                            : queued || room.queue.length >= 100)
                         }
-                        onClick={() => toggleQueue(player.id)}
+                        onClick={() => actOnPlayer(player)}
                       >
-                        {queued ? "✓" : "+"}
+                        {draftMode
+                          ? "+ DRAFT"
+                          : queued
+                            ? "✓ QUEUED"
+                            : "+ QUEUE"}
                       </button>
+                      <Avatar player={player} />
                       <button
                         className="item"
                         aria-label={`Select ${player.name}`}
@@ -1368,30 +1397,22 @@ export default function DraftRoom({ id }: { id: string }) {
         </div>
       </header>
       {!lobby && (
-        <ol className="pick-strip" aria-label="Recent and upcoming picks">
+        <ol className="pick-strip" aria-label="Upcoming picks">
           {order
-            .slice(
-              Math.max(0, currentIndex - 3),
-              Math.min(order.length, currentIndex + 6),
-            )
+            .slice(currentIndex, Math.min(order.length, currentIndex + 6))
             .map((slot, relative) => {
-              const index = Math.max(0, currentIndex - 3) + relative,
-                pick = room.picks[index],
-                player = pick ? playerMap.get(pick.playerId) : null;
+              const index = currentIndex + relative;
               return (
                 <li key={index}>
                   <button
-                    className={`${index === currentIndex ? "current" : pick ? "picked" : ""} ${slot === mySlot ? "mine" : ""}`}
+                    className={`${index === currentIndex ? "current" : ""} ${slot === mySlot ? "mine" : ""}`}
                     onClick={() => showRoster(slot)}
-                    aria-label={`Pick ${index + 1}, ${managerName(slot)}${player ? `, ${player.name}` : ""}`}
+                    aria-label={`Pick ${index + 1}, ${managerName(slot)}`}
                   >
                     <small>
                       {index + 1} · {managerName(slot)}
                     </small>
-                    <strong>
-                      {player?.name ??
-                        (index === currentIndex ? "On clock" : "—")}
-                    </strong>
+                    <strong>{index === currentIndex ? "On clock" : "—"}</strong>
                   </button>
                 </li>
               );
@@ -1462,7 +1483,59 @@ export default function DraftRoom({ id }: { id: string }) {
         {lobby && lobbyPanel}
         {playersPanel}
         {boardPanel}
-        {queuePanel}
+        <aside
+          className="activity-panel"
+          aria-label="Queue and recent picks"
+          data-hidden={view !== "Queue" || undefined}
+        >
+          {queuePanel}
+          <section className="panel recent-panel" aria-label="Recently Drafted">
+            <div className="panel-bar">
+              <strong>Recently Drafted</strong>
+              <span>
+                {room.picks.length} {room.picks.length === 1 ? "pick" : "picks"}
+              </span>
+            </div>
+            <div
+              className="scroll"
+              aria-live="polite"
+              aria-relevant="additions"
+            >
+              {room.picks.length === 0 ? (
+                <p className="empty">No picks yet.</p>
+              ) : (
+                <ol className="recent-list">
+                  {room.picks
+                    .slice(-20)
+                    .reverse()
+                    .map((pick) => {
+                      const player = playerMap.get(pick.playerId);
+                      return (
+                        <li key={pick.index}>
+                          {player && <Avatar player={player} />}
+                          <button
+                            className="item"
+                            onClick={() => showRoster(pick.slot)}
+                            aria-label={`View pick ${pick.index + 1}, ${managerName(pick.slot)}, ${player?.name ?? "Player"}`}
+                          >
+                            <strong>{player?.name ?? "Player"}</strong>
+                            <small>
+                              #{pick.index + 1} · {managerName(pick.slot)} ·{" "}
+                              {pick.source === "manual"
+                                ? "Drafted"
+                                : pick.source === "commissioner"
+                                  ? "Commissioner"
+                                  : "Auto pick"}
+                            </small>
+                          </button>
+                        </li>
+                      );
+                    })}
+                </ol>
+              )}
+            </div>
+          </section>
+        </aside>
         {rosterPanel}
         {settings && (
           <section className="panel sheet" aria-label="League settings">
@@ -1555,28 +1628,26 @@ export default function DraftRoom({ id }: { id: string }) {
       <footer className="actionbar">
         <button
           className="selection"
-          disabled={!selected}
+          disabled={!activeSelection}
           onClick={() => setDetails(!details)}
           aria-label={
-            selected
-              ? `${details ? "Close" : "Open"} details for ${selected.name}`
+            activeSelection
+              ? `${details ? "Close" : "Open"} details for ${activeSelection.name}`
               : "No player selected"
           }
         >
-          {selected ? (
+          {activeSelection ? (
             <>
-              <strong>{selected.name}</strong>
+              <strong>{activeSelection.name}</strong>
               <small>
-                {positionsOf(selected)} · {selected.team} ·{" "}
-                {drafted.has(selected.id)
-                  ? "Drafted"
-                  : !fits
-                    ? "Cannot fit roster"
-                    : myTurn || acting
-                      ? lobby
-                        ? "Fits roster"
-                        : "Eligible now"
-                      : "Fits roster"}
+                {positionsOf(activeSelection)} · {activeSelection.team} ·{" "}
+                {!fits
+                  ? "Cannot fit roster"
+                  : myTurn || acting
+                    ? lobby
+                      ? "Fits roster"
+                      : "Eligible now"
+                    : "Fits roster"}
               </small>
             </>
           ) : (
@@ -1599,23 +1670,13 @@ export default function DraftRoom({ id }: { id: string }) {
         )}
         <button
           className="primary draft-button"
-          disabled={!canPick}
-          onClick={() =>
-            selected &&
-            send(
-              {
-                type: "pick",
-                playerId: selected.id,
-                expectedIndex: currentIndex,
-                forTeam: !!acting,
-              },
-              `${selected.name} drafted`,
-            )
-          }
+          disabled={draftMode ? !canPick : !canQueue}
+          onClick={() => activeSelection && actOnPlayer(activeSelection)}
         >
-          {selected && room.phase !== "complete"
-            ? `Draft ${selected.name}`
-            : "Draft"}
+          <span>{draftMode ? "+ DRAFT" : "+ QUEUE"}</span>
+          {activeSelection && (
+            <span className="action-player"> {activeSelection.name}</span>
+          )}
         </button>
       </footer>
     </div>
