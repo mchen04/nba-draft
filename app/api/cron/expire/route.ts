@@ -1,21 +1,16 @@
 import { NextRequest } from "next/server";
-import { timingSafeEqual } from "node:crypto";
 import { expireRooms } from "@/lib/engine";
-import { json, problem } from "@/lib/http";
+import { cronAuthorized, json, problem } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-// Vercel Cron sends `Authorization: Bearer $CRON_SECRET` when that variable is set.
+// Expiry deletes rooms, so it runs only when ROOM_EXPIRY=on. Enabling Vercel crons for the
+// weekly catalog check therefore cannot delete rooms by itself.
 export async function GET(request: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return json({ error: "Expiry is not configured." }, 503);
-  const expected = Buffer.from(`Bearer ${secret}`),
-    received = Buffer.from(request.headers.get("authorization") ?? "");
-  if (
-    expected.length !== received.length ||
-    !timingSafeEqual(expected, received)
-  )
-    return json({ error: "Not authorized." }, 401);
+  const denied = cronAuthorized(request);
+  if (denied) return denied;
+  if (process.env.ROOM_EXPIRY !== "on")
+    return json({ paused: true, expired: 0 });
   try {
     return json(
       await expireRooms(request.nextUrl.searchParams.get("dryRun") === "1"),

@@ -6,6 +6,7 @@ import {
   Settings,
   Slot,
   Stat,
+  Unchanged,
   View,
   categoryStats,
   slots,
@@ -97,16 +98,28 @@ export default function DraftRoom({ id }: { id: string }) {
   const [retry, setRetry] = useState<{ body: string; label: string } | null>(
     null,
   );
+  // Reconnect bumps this so a failed player-data load runs again.
+  const [catalogAttempt, setCatalogAttempt] = useState(0);
   const [otherRooms, setOtherRooms] = useState<RecentRoom[]>([]);
   const fetching = useRef(false),
     latestVersion = useRef(-1),
+    latestViewer = useRef(-1),
     readGeneration = useRef(0),
-    sortInitialized = useRef(false);
+    sortInitialized = useRef(false),
+    catalogLoading = useRef<string | null>(null);
   const pendingAction = useRef<AbortController | null>(null),
     menuRef = useRef<HTMLDetailsElement | null>(null);
-  const accept = useCallback((view: View) => {
-    if (view.version >= latestVersion.current) {
+  const accept = useCallback((view: View | Unchanged) => {
+    if ("unchanged" in view)
+      setRoom((current) =>
+        current?.version === view.version &&
+        current.commissionerIdle !== view.commissionerIdle
+          ? { ...current, commissionerIdle: view.commissionerIdle }
+          : current,
+      );
+    else if (view.version >= latestVersion.current) {
       latestVersion.current = view.version;
+      latestViewer.current = view.viewer;
       setRoom(view);
     }
     setOffset(view.serverNow - Date.now());
@@ -117,7 +130,12 @@ export default function DraftRoom({ id }: { id: string }) {
     fetching.current = true;
     const generation = readGeneration.current;
     try {
-      const response = await fetch(`/api/rooms/${id}`, {
+      // The server answers "unchanged" when the room still has this version and viewer.
+      const since =
+        latestVersion.current >= 0
+          ? `?since=${latestVersion.current}&viewer=${latestViewer.current}`
+          : "";
+      const response = await fetch(`/api/rooms/${id}${since}`, {
         cache: "no-store",
         signal: AbortSignal.timeout(15000),
       });
@@ -131,18 +149,24 @@ export default function DraftRoom({ id }: { id: string }) {
       fetching.current = false;
     }
   }, [id, accept]);
-  const loadCatalog = useCallback(async () => {
-    const response = await fetch(`/api/rooms/${id}?catalog=1`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(30000),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error);
-    setCatalog(result);
-  }, [id]);
+  // The player-data URL names the pool's digest, so the browser and CDN cache it.
+  // A room saved before migration (no digest) still serves its own pool.
+  const loadCatalog = useCallback(
+    async (path: string | undefined) => {
+      const response = await fetch(
+        path ?? `/api/rooms/${id}?catalog=1`,
+        path
+          ? { signal: AbortSignal.timeout(30000) }
+          : { cache: "no-store", signal: AbortSignal.timeout(30000) },
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      setCatalog(result);
+    },
+    [id],
+  );
   useEffect(() => {
     load();
-    loadCatalog().catch((failure) => setError(failure.message));
     setRecoveryCode(sessionStorage.getItem(`recovery_${id}`) ?? "");
     const pendingClaim = sessionStorage.getItem(`claim_retry_${id}`);
     if (pendingClaim) {
@@ -167,7 +191,7 @@ export default function DraftRoom({ id }: { id: string }) {
       window.removeEventListener("online", reconnect);
       window.removeEventListener("offline", offline);
     };
-  }, [id, load, loadCatalog]);
+  }, [id, load]);
   useEffect(() => {
     if (room && !sortInitialized.current) {
       setSort(room.settings.scoring === "points" ? "FP" : "PTS");
@@ -188,14 +212,25 @@ export default function DraftRoom({ id }: { id: string }) {
     setOtherRooms(recentRooms().filter((candidate) => candidate.id !== id));
   }, [id, roomName, myLabel]);
   useEffect(() => {
+    if (!room) return;
+    const { dataset, digest = "" } = room.catalog;
     if (
-      room &&
-      catalog &&
-      (room.catalog.fetchedAt !== catalog.fetchedAt ||
-        room.catalog.season !== catalog.season)
+      (catalog && (catalog.digest ?? "") === digest) ||
+      catalogLoading.current === digest
     )
-      loadCatalog().catch((failure) => setError(failure.message));
-  }, [room, catalog, loadCatalog]);
+      return;
+    catalogLoading.current = digest;
+    loadCatalog(digest ? `/api/catalog/${dataset}/${digest}` : undefined)
+      .catch((failure) => setError(failure.message))
+      .finally(() => {
+        if (catalogLoading.current === digest) catalogLoading.current = null;
+      });
+  }, [room, catalog, loadCatalog, catalogAttempt]);
+  const reconnect = () => {
+    setError("");
+    setCatalogAttempt((attempt) => attempt + 1);
+    load();
+  };
   async function send(command: Command, label = "Saved", savedBody?: string) {
     if (busy) return;
     setBusy(true);
@@ -258,11 +293,7 @@ export default function DraftRoom({ id }: { id: string }) {
         setSelectedId(null);
         setDetails(false);
       }
-      if (command.type === "settings") {
-        setSettings(null);
-        await loadCatalog();
-      }
-      if (command.type === "refresh") await loadCatalog();
+      if (command.type === "settings") setSettings(null);
     } catch (failure) {
       if (
         failure instanceof TypeError ||
@@ -403,14 +434,7 @@ export default function DraftRoom({ id }: { id: string }) {
               : "Connecting to the saved draft…")}
         </p>
         <div className="row">
-          <button
-            onClick={() => {
-              load();
-              loadCatalog().catch((failure) => setError(failure.message));
-            }}
-          >
-            Reconnect
-          </button>
+          <button onClick={reconnect}>Reconnect</button>
           <a className="button" href="/">
             New room
           </a>
@@ -461,9 +485,12 @@ export default function DraftRoom({ id }: { id: string }) {
   ).length;
   const commissionerName =
     room.members.find((member) => member.commissioner)?.name ?? null;
-  const dataAge = Date.now() - new Date(catalog.fetchedAt).getTime();
+  // Room metadata names the pinned dataset, its last ESPN check, and any refresh failure.
+  const info = room.catalog;
+  const dataAge =
+    Date.now() - new Date(info.checkedAt ?? info.fetchedAt).getTime();
   const dataStale =
-    dataAge > 86400000 || !!catalog.warning || catalog.projectedCount === 0;
+    dataAge > 8 * 86400000 || !!info.warning || info.projectedCount === 0;
   const openSlots = Array.from(
     { length: room.settings.teamCount },
     (_, slot) => slot,
@@ -1160,10 +1187,12 @@ export default function DraftRoom({ id }: { id: string }) {
           >
             ESPN projections
           </a>{" "}
-          · {catalog.season - 1}–{String(catalog.season).slice(-2)} ·{" "}
-          {catalog.projectedCount}/{players.length} projected · retrieved{" "}
-          {new Date(catalog.fetchedAt).toLocaleString()}
-          {catalog.warning && <p className="warn">{catalog.warning}</p>}
+          · {info.season - 1}–{String(info.season).slice(-2)} · data version{" "}
+          {info.dataset} · {info.projectedCount}/{players.length} projected ·
+          updated {new Date(info.fetchedAt).toLocaleString()}
+          {info.checkedAt &&
+            ` · checked ${new Date(info.checkedAt).toLocaleString()}`}
+          {info.warning && <p className="warn">{info.warning}</p>}
           {!lobby && <p>Frozen at start. ESPN outages do not affect picks.</p>}
           {commissioner && lobby && (
             <button
@@ -1192,7 +1221,7 @@ export default function DraftRoom({ id }: { id: string }) {
         <span>
           Offline · picks paused on this device. The server clock continues.
         </span>
-        <button onClick={load}>Reconnect</button>
+        <button onClick={reconnect}>Reconnect</button>
       </div>
     ),
     error && (
@@ -1329,8 +1358,8 @@ export default function DraftRoom({ id }: { id: string }) {
           <span
             className={`data-badge ${dataStale ? "stale" : ""}`}
             title={
-              catalog.warning ??
-              `ESPN data retrieved ${new Date(catalog.fetchedAt).toLocaleString()}`
+              info.warning ??
+              `ESPN data updated ${new Date(info.fetchedAt).toLocaleString()}`
             }
           >
             ESPN {age(dataAge)}
@@ -1469,7 +1498,7 @@ export default function DraftRoom({ id }: { id: string }) {
                 {selected.team} · {selected.positions.join(", ")}
                 {injuryOf(selected) ? ` · ${injuryOf(selected)}` : ""} ·{" "}
                 {selected.projected
-                  ? `${catalog.season - 1}–${String(catalog.season).slice(-2)} ESPN projection`
+                  ? `${info.season - 1}–${String(info.season).slice(-2)} ESPN projection`
                   : "No current ESPN projection"}
               </p>
               <div className="details-stats">

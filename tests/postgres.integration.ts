@@ -1,6 +1,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Client } from "pg";
 import { database } from "../lib/db";
 import {
@@ -8,10 +9,11 @@ import {
   createRoom,
   expireRooms,
   inactiveLimit,
+  pollRoom,
   roomView,
   transactRoom,
 } from "../lib/engine";
-import { getCatalog } from "../lib/espn";
+import { getCatalog, refreshAge } from "../lib/espn";
 import { exportCsv } from "../lib/export";
 import { Settings, defaultSettings } from "../lib/model";
 import { eligible, pickOrder, rosterSlots } from "../lib/rules";
@@ -829,4 +831,272 @@ test("polls read a small room row and leave the frozen player pool intact", asyn
     [room.id],
   );
   assert.equal(frozen.rows[0].frozen, before.frozen);
+});
+
+test("idle polls neither wait for nor take the room lock, and write no WAL", async () => {
+  const { room, token } = await readyRoom();
+  const holder = await database().connect();
+  try {
+    await holder.query("BEGIN");
+    await holder.query("SELECT 1 FROM nba_draft.rooms WHERE id=$1 FOR UPDATE", [
+      room.id,
+    ]);
+    const polled = await Promise.race([
+      transactRoom(room.id, token, undefined, false),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("poll waited for the lock")), 3000),
+      ),
+    ]);
+    assert.equal(polled.view.phase, "live");
+  } finally {
+    await holder.query("ROLLBACK");
+    holder.release();
+  }
+  const lsn = async () =>
+    (await database().query("SELECT pg_current_wal_insert_lsn() AS lsn"))
+      .rows[0].lsn;
+  const start = await lsn();
+  for (let poll = 0; poll < 20; poll++)
+    await transactRoom(room.id, token, undefined, false);
+  const written = await database().query(
+    "SELECT pg_wal_lsn_diff($1, $2)::int AS bytes",
+    [await lsn(), start],
+  );
+  assert.equal(written.rows[0].bytes, 0, "20 idle polls wrote WAL");
+});
+
+test("rooms share one stored player dataset and keep only its id", async () => {
+  const first = await makeRoom(),
+    second = await makeRoom();
+  assert.equal(first.room.catalog.dataset, second.room.catalog.dataset);
+  assert.ok(first.room.catalog.players.length > 100);
+  const rows = await database().query(
+    "SELECT data->'catalog' ? 'players' AS embedded, pg_column_size(data) AS bytes FROM nba_draft.rooms WHERE id = ANY($1)",
+    [[first.room.id, second.room.id]],
+  );
+  for (const row of rows.rows) {
+    assert.equal(row.embedded, false);
+    assert.ok(row.bytes < 10000, `room row is ${row.bytes} bytes`);
+  }
+  const polled = await transactRoom(first.room.id, first.token);
+  assert.deepEqual(polled.room.catalog.players, first.room.catalog.players);
+});
+
+test("weekly refresh pins running drafts, reuses unchanged pools, and lobby refresh re-pins", async () => {
+  const season = OUTAGE_SEASON,
+    custom = { ...settings, season };
+  const base = await getCatalog(season);
+  const original = (
+    await database().query(
+      "SELECT dataset_id, attempted_at, checked_at, error FROM nba_draft.catalogs WHERE season=$1",
+      [season],
+    )
+  ).rows[0];
+  const live = await readyRoom(custom);
+  const lobby = await makeRoom(custom);
+  const sample = readFileSync(
+    new URL("./fixtures/espn-2027-sample.json", import.meta.url),
+    "utf8",
+  );
+  const due = () =>
+    database().query(
+      "UPDATE nba_draft.catalogs SET attempted_at=NULL, checked_at=now() - make_interval(secs => $2::double precision / 1000) WHERE season=$1",
+      [season, refreshAge + 60000],
+    );
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return new Response(sample, {
+      headers: { "x-fantasy-filter-player-count": "4" },
+    });
+  };
+  try {
+    await due();
+    const refreshed = await getCatalog(season);
+    assert.equal(calls, 1);
+    assert.notEqual(refreshed.dataset, base.dataset);
+    assert.equal(refreshed.source?.reported, 4);
+    assert.ok(refreshed.checkedAt);
+    assert.equal((await getCatalog(season)).dataset, refreshed.dataset);
+    assert.equal(calls, 1, "a fresh check is reused for a week");
+    await due();
+    assert.equal((await getCatalog(season)).dataset, refreshed.dataset);
+    assert.equal(calls, 2, "an unchanged pool keeps its dataset");
+
+    const running = await transactRoom(live.room.id, live.token);
+    assert.equal(running.room.catalog.dataset, base.dataset);
+    assert.deepEqual(running.room.catalog.players, base.players);
+    const repinned = await transactRoom(
+      lobby.room.id,
+      lobby.token,
+      command("refresh"),
+    );
+    assert.equal(repinned.room.catalog.dataset, refreshed.dataset);
+    assert.equal(calls, 2, "lobby refresh within 15 minutes reuses the check");
+    await assert.rejects(
+      transactRoom(live.room.id, live.token, command("refresh")),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await database().query(
+      "UPDATE nba_draft.catalogs SET dataset_id=$2, attempted_at=$3, checked_at=$4, error=$5 WHERE season=$1",
+      [
+        season,
+        original.dataset_id,
+        original.attempted_at,
+        original.checked_at,
+        original.error,
+      ],
+    );
+  }
+});
+
+test("migration moves a legacy embedded pool into a shared dataset without touching picks", async () => {
+  const { room, token } = await readyRoom();
+  await transactRoom(
+    room.id,
+    token,
+    command("pick", {
+      playerId: (await transactRoom(room.id, token)).room.ranking[0],
+      expectedIndex: 0,
+    }),
+  );
+  const { players, ...meta } = room.catalog;
+  const { dataset: _dataset, digest, ...legacy } = meta;
+  await database().query(
+    "UPDATE nba_draft.rooms SET data = jsonb_set(data, '{catalog}', $2::jsonb) WHERE id=$1",
+    [room.id, JSON.stringify({ ...legacy, players })],
+  );
+  const snapshot = () =>
+    database()
+      .query(
+        "SELECT md5((r.data - 'catalog')::text) AS room, (SELECT md5(string_agg(pick_index||':'||player_id, ',' ORDER BY pick_index)) FROM nba_draft.picks WHERE room_id=r.id) AS picks FROM nba_draft.rooms r WHERE id=$1",
+        [room.id],
+      )
+      .then((result) => result.rows[0]);
+  // Before migration the room keeps working on its embedded pool and never loses it.
+  const legacyRead = await transactRoom(room.id, token);
+  assert.deepEqual(legacyRead.room.catalog.players, players);
+  await transactRoom(
+    room.id,
+    token,
+    command("queue", { players: [legacyRead.room.ranking[5]] }),
+  );
+  const embedded = await database().query(
+    "SELECT jsonb_array_length(data->'catalog'->'players') AS players FROM nba_draft.rooms WHERE id=$1",
+    [room.id],
+  );
+  assert.equal(embedded.rows[0].players, players.length);
+  const before = await snapshot();
+  const datasets = async () =>
+    (
+      await database().query(
+        "SELECT count(*)::int AS n FROM nba_draft.datasets",
+      )
+    ).rows[0].n;
+  const count = await datasets();
+  await database().query(
+    readFileSync(new URL("../db/002.sql", import.meta.url), "utf8"),
+  );
+  assert.deepEqual(await snapshot(), before);
+  assert.equal(await datasets(), count, "identical pool reuses its dataset");
+  const migrated = await transactRoom(room.id, token);
+  assert.equal(migrated.room.catalog.dataset, room.catalog.dataset);
+  assert.equal(migrated.room.catalog.digest, digest);
+  assert.deepEqual(migrated.room.catalog.players, players);
+  assert.equal(migrated.room.picks.length, 1);
+
+  // Rolling back past this release first copies pools back; a later migrate strips them again.
+  const client = await database().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      readFileSync(
+        new URL("../scripts/restore-embedded-pools.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    const restored = await client.query(
+      "SELECT data->'catalog'->'players' AS players, (SELECT count(*)::int FROM nba_draft.catalogs WHERE dataset_id IS NOT NULL AND NOT snapshot ? 'players') AS bare FROM nba_draft.rooms WHERE id=$1",
+      [room.id],
+    );
+    assert.deepEqual(restored.rows[0].players, players);
+    assert.equal(restored.rows[0].bare, 0);
+    await client.query(
+      readFileSync(new URL("../db/002.sql", import.meta.url), "utf8"),
+    );
+    const stripped = await client.query(
+      "SELECT data->'catalog' ? 'players' AS embedded, data->'catalog'->>'digest' AS digest FROM nba_draft.rooms WHERE id=$1",
+      [room.id],
+    );
+    assert.deepEqual(stripped.rows[0], { embedded: false, digest });
+  } finally {
+    await client.query("ROLLBACK");
+    client.release();
+  }
+});
+
+test("a poll with the shown version gets only clock fields until the room changes", async () => {
+  const { room, token, secondToken } = await readyRoom();
+  const first = await pollRoom(room.id, token);
+  assert.ok(!("unchanged" in first));
+  const query = Client.prototype.query;
+  let bytes = 0;
+  Client.prototype.query = async function (this: Client, ...args: unknown[]) {
+    const result = await (query as Function).apply(this, args);
+    bytes += JSON.stringify(result?.rows ?? []).length;
+    return result;
+  } as typeof query;
+  let same;
+  try {
+    same = await pollRoom(room.id, token, first.version, first.viewer);
+  } finally {
+    Client.prototype.query = query;
+  }
+  assert.ok(bytes < 300, `unchanged poll read ${bytes} bytes`);
+  assert.deepEqual(Object.keys(same).sort(), [
+    "commissionerIdle",
+    "serverNow",
+    "unchanged",
+    "version",
+  ]);
+  assert.equal(same.version, first.version);
+  assert.equal(same.commissionerIdle, first.commissionerIdle);
+
+  // Another cookie at the same version is a different viewer, so it gets the full view.
+  const switched = await pollRoom(
+    room.id,
+    secondToken,
+    first.version,
+    first.viewer,
+  );
+  assert.ok(!("unchanged" in switched));
+  assert.notEqual(switched.viewer, first.viewer);
+  assert.equal(switched.me?.slot, 1);
+
+  const ranked = (await transactRoom(room.id, token)).room.ranking;
+  await transactRoom(
+    room.id,
+    token,
+    command("pick", { playerId: ranked[0], expectedIndex: 0 }),
+  );
+  const changed = await pollRoom(
+    room.id,
+    secondToken,
+    first.version,
+    switched.viewer,
+  );
+  assert.ok(!("unchanged" in changed));
+  assert.equal(changed.picks.length, 1);
+  assert.equal(changed.me?.slot, 1);
+
+  await database().query(
+    "UPDATE nba_draft.rooms SET data=jsonb_set(data,'{deadline}',to_jsonb((extract(epoch FROM clock_timestamp())*1000-1000)::bigint)) WHERE id=$1",
+    [room.id],
+  );
+  const due = await pollRoom(room.id, token, changed.version, first.viewer);
+  assert.ok(!("unchanged" in due));
+  assert.equal(due.picks.length, 2);
+  assert.equal(due.picks[1].source, "ranking");
 });

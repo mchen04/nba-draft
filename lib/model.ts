@@ -60,15 +60,29 @@ export type Player = {
   derived: Stat[];
   projected: boolean;
 };
+export type Source = {
+  name: string;
+  url: string;
+  // Player count ESPN reports for the query, and entries actually received.
+  reported: number | null;
+  received: number;
+};
+// One shared, immutable player dataset version. Rooms store everything except `players`.
 export type Catalog = {
+  dataset: number;
+  // sha256 of the pool; part of the cached URL, so a reissued id cannot serve stale players.
+  digest?: string;
   season: number;
   mapping?: number;
   fetchedAt: string;
+  checkedAt?: string;
+  source?: Source;
   players: Player[];
   projectedCount: number;
   missing: Record<string, number>;
   warning: string | null;
 };
+export type CatalogMeta = Omit<Catalog, "players">;
 
 const counts = zod.object(
   Object.fromEntries(
@@ -232,7 +246,15 @@ export type View = Omit<Room, "members" | "catalog" | "ranking"> & {
   }[];
   commissionerIdle: boolean;
   me: { slot: number | null; commissioner: boolean; ready: boolean } | null;
+  viewer: number;
   queue: number[];
-  catalog: Omit<Catalog, "players">;
+  catalog: CatalogMeta;
   serverNow: number;
+};
+// A poll reply when the room still has the version the tab shows.
+export type Unchanged = {
+  unchanged: true;
+  version: number;
+  serverNow: number;
+  commissionerIdle: boolean;
 };
