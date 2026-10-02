@@ -200,7 +200,7 @@ Run the additive `db/003.sql` migration before publishing the photo route.
 It creates `nba_draft.player_photos`. It changes no room, pick, or dataset.
 
 ```sh
-node --env-file=/private/path/neon.env --import tsx scripts/database.ts migrate
+node --env-file=/private/path/neon.env --import tsx scripts/database.ts migrate 003.sql
 node --env-file=/private/path/neon.env --import tsx scripts/photos.ts
 ```
 
@@ -211,6 +211,22 @@ A missing upstream image gets a stored missing marker. Temporary failures remain
 Run the script again after a failure. Cached and missing entries cause no upstream request.
 Jobs use per-player database locks to prevent duplicate downloads.
 The existing weekly catalog job also ingests new players within a bounded time budget.
+
+An existing Vercel production secret can run the release without exposing its connection.
+Use a task-local `vercel.json` copy with this deployment-specific build command:
+
+```json
+{"buildCommand":"node --import tsx scripts/release.ts migrate && npm run build"}
+```
+
+Keep the existing configuration fields in that copy.
+Deploy it with `vercel deploy --prod --skip-domain --local-config /private/path/release.json`.
+This uses the hosted production environment and leaves the live domain on its current deployment.
+The release applies only `003.sql` and prints schema, counts, and row fingerprints.
+It ingests photos, retries temporary failures, and checks reuse in a fresh process with upstream requests disabled.
+It logs no room rows or connection values. It never writes rooms, picks, requests, catalogs, or datasets.
+For a later read-only capture, use `scripts/release.ts inspect` as the build command instead.
+Normal GitHub deployments retain the normal build command.
 
 All photos load from `/api/photos/{playerId}`. Page reads never fetch upstream photos.
 Cached images and missing markers have one-year browser and CDN cache headers.

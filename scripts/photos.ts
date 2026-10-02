@@ -1,6 +1,15 @@
 import { database } from "../lib/db";
 import { ingestPhotos } from "../lib/photos";
 
+let upstreamFetches = 0;
+const upstream = globalThis.fetch;
+globalThis.fetch = (...args) => {
+  upstreamFetches++;
+  if (process.argv.includes("--no-upstream"))
+    throw new Error("Upstream fetch is disabled for cache verification.");
+  return upstream(...args);
+};
+
 async function main() {
   try {
     // Include every pinned pool, so old rooms also keep their photos.
@@ -10,7 +19,7 @@ async function main() {
     const result = await ingestPhotos(
       players.rows.map((row) => Number(row.id)),
     );
-    console.log(JSON.stringify(result));
+    console.log(JSON.stringify({ ...result, upstreamFetches }));
     if (result.failed) process.exitCode = 1;
     const counts = await database().query(
       "SELECT status, count(*)::int AS players, coalesce(sum(octet_length(image)),0)::bigint AS bytes FROM nba_draft.player_photos GROUP BY status ORDER BY status",
