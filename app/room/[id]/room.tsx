@@ -19,6 +19,7 @@ import {
   value,
 } from "@/lib/rules";
 import { Avatar } from "@/app/components/avatar";
+import { downloadBoardPng } from "@/lib/board-png";
 import { SettingsEditor } from "@/app/components/settings";
 import {
   RecentRoom,
@@ -76,6 +77,9 @@ export default function DraftRoom({ id }: { id: string }) {
     [perGame, setPerGame] = useState(true),
     [showDrafted, setShowDrafted] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const boardRef = useRef<HTMLTableElement | null>(null);
+  const exportPending = useRef(false);
   const [selectedId, setSelectedId] = useState<number | null>(null),
     [details, setDetails] = useState(false),
     [limit, setLimit] = useState(100);
@@ -1025,8 +1029,35 @@ export default function DraftRoom({ id }: { id: string }) {
       aria-label="Draft board"
       data-hidden={view !== "Board" || undefined}
     >
+      <div className="panel-bar">
+        <strong>Draft board</strong>
+        <button
+          disabled={exporting}
+          onClick={async () => {
+            if (exportPending.current || !boardRef.current) return;
+            exportPending.current = true;
+            setExporting(true);
+            setError("");
+            try {
+              await downloadBoardPng(
+                boardRef.current,
+                room.name,
+                `${room.settings.format === "3rr" ? "3RR" : "Snake"} · ${room.settings.teamCount} teams · ${configured.length} rounds · ${room.picks.length}/${order.length} picks · ${room.phase}`,
+              );
+              setNotice("Board PNG downloaded");
+            } catch {
+              setError("The board image could not be exported. Try again.");
+            } finally {
+              exportPending.current = false;
+              setExporting(false);
+            }
+          }}
+        >
+          {exporting ? "Exporting board…" : "Export board as PNG"}
+        </button>
+      </div>
       <div className="scroll board-scroll">
-        <table>
+        <table ref={boardRef}>
           <thead>
             <tr>
               <th>Rd</th>
@@ -1054,6 +1085,7 @@ export default function DraftRoom({ id }: { id: string }) {
                   return (
                     <td
                       key={slot}
+                      data-player-id={player?.id}
                       className={
                         index === currentIndex && room.phase !== "complete"
                           ? "current"
