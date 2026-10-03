@@ -267,6 +267,14 @@ Catch-up limits:
 
 ## Exports
 
+Open Board and choose “Export board as PNG” to download the complete current board.
+The image includes all rounds and teams, even outside the viewport.
+It keeps the displayed order, pick details, position colors, and current-pick highlight.
+Player photos use the existing cache. Missing or failed photos show initials.
+The image adds the room name and draft summary, without other app controls.
+Long names wrap in the image. The on-screen board keeps its existing layout.
+Export uses the board loaded in your browser and does not change saved picks.
+
 Authenticated owners can download order, picks, and roster CSV files.
 Files use UTF-8 with a BOM and quoted cells.
 Picks include player IDs, team slots, order, source, and UTC selection time.
